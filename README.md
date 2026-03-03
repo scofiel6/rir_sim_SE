@@ -22,6 +22,22 @@ Multi-channel arrays are supported (linear/circular), with optional channel mism
 out = run_rir_sim_se(cfg, pulse_recording=pulse_recording, dry_wav=dry_wav)
 ```
 
+Fast integration pattern (fit once, generate many):
+```python
+state = prepare_rir_sim_se_state(cfg, pulse_recording=pulse_recording)
+out = run_rir_sim_se(cfg, state=state, dry_wav=dry_wav)
+```
+
+Training-time in-memory fast path (no per-step disk I/O):
+```python
+cfg.save_outputs = False
+cfg.return_audio_arrays = True
+state = prepare_rir_sim_se_state(cfg, pulse_recording=pulse_recording)
+out = run_rir_sim_se(cfg, state=state, dry_audio=dry_np, dry_fs=dry_fs)
+wet = out["wet"]
+ref = out["ref"]
+```
+
 Output keys:
 - `rir_path`
 - `rir_ref_path`
@@ -31,12 +47,22 @@ Output keys:
 - `meta`
 - `engine_manifest`
 - `mismatch`
+- `fit_source`
+- `fit_cache_path`
+- `recordings_fingerprint`
 
 ## Reproducibility
 - Engine vendoring + hash manifest: `reproducibility/engine_manifest.json`
 - RNG policy checker: `tools/check_rng_policy.py`
 - Rebuild manifest: `python tools/build_engine_manifest.py`
 - Details: `REPRODUCIBILITY.md`
+- Fit cache controls in `RIRSimSEConfig`:
+  - `enable_fit_cache`
+  - `fit_cache_path`
+- `fit_cache_force_refit`
+- Online speed controls in `RIRSimSEConfig`:
+  - `save_outputs`
+  - `return_audio_arrays`
 
 ## Array and device realism
 - `RIRSimSEConfig.mic_array_type`: `linear` or `circular`

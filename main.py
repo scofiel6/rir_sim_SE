@@ -1,5 +1,5 @@
 from config import RIRSimSEConfig
-from rir_sim_se import run_rir_sim_se
+from rir_sim_se import prepare_rir_sim_se_state, run_rir_sim_se
 
 
 if __name__ == "__main__":
@@ -21,7 +21,9 @@ if __name__ == "__main__":
     pulse_recording = "/home/xukj/dataset_comsolTest/room_test"
     dry_wav = "/home/xukj/dataset_rir/sound_field_sim/test.wav"
 
-    out = run_rir_sim_se(cfg, pulse_recording=pulse_recording, dry_wav=dry_wav)
+    # Fit once and reuse state for fast repeated generation.
+    state = prepare_rir_sim_se_state(cfg, pulse_recording=pulse_recording)
+    out = run_rir_sim_se(cfg, state=state, dry_wav=dry_wav)
 
     print("=== rir_sim_SE done ===")
     print("rir:", out["rir_path"])
@@ -30,5 +32,7 @@ if __name__ == "__main__":
     print("wet:", out["wet_path"])
     print("ref:", out["ref_path"])
     print("n_channels:", out["n_channels"])
+    print("fit_source:", out.get("fit_source"))
+    print("fit_cache_path:", out.get("fit_cache_path"))
     print("drr/c50 strategy:", out["fit"].get("drr_c50_strategy"))
     print("rt60 median:", out["fit"].get("rt60_median"))

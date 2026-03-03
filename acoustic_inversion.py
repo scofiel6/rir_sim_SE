@@ -72,6 +72,55 @@ def create_generator(cfg: RIRSimSEConfig):
     return gen
 
 
+def apply_fit_to_generator(gen, fit):
+    """
+    Write cached fit parameters back to generator so we can skip expensive inversion.
+    """
+    if not isinstance(fit, dict):
+        return gen
+
+    room = fit.get("fitted_custom_room_range")
+    if isinstance(room, dict):
+        gen.custom_room_range = room
+
+    rt20 = fit.get("rt60_p20")
+    rt80 = fit.get("rt60_p80")
+    if rt20 is not None and rt80 is not None:
+        gen.custom_rt60_range = (float(rt20), float(rt80))
+
+    rt50 = fit.get("rt60_median")
+    if rt50 is not None:
+        gen.custom_rt60_center = float(rt50)
+
+    band = fit.get("rt60_band_median")
+    if isinstance(band, list) and len(band) > 0:
+        gen.custom_band_rt60_prior = np.asarray(band, dtype=np.float64)
+
+    drr = fit.get("drr_db_p20_p80")
+    if isinstance(drr, list) and len(drr) == 2:
+        gen.drr_range_db = (float(drr[0]), float(drr[1]))
+
+    c50 = fit.get("c50_db_p20_p80")
+    if isinstance(c50, list) and len(c50) == 2:
+        gen.c50_range_db = (float(c50[0]), float(c50[1]))
+
+    nr = fit.get("noise_rms_median")
+    if nr is not None:
+        gen.custom_noise_rms = float(nr)
+
+    nt = fit.get("noise_tilt_db_per_oct_median")
+    if nt is not None:
+        gen.custom_noise_tilt_db_oct = float(nt)
+
+    gen.fitted = fit
+    return gen
+
+
+def create_generator_from_fit(cfg: RIRSimSEConfig, fit):
+    gen = create_generator(cfg)
+    return apply_fit_to_generator(gen, fit)
+
+
 def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
     gen = create_generator(cfg)
     fit = gen.fit_from_recordings(

@@ -14,6 +14,10 @@ class RIRSimSEConfig:
     custom_room_range: Optional[RoomRange] = None
     generic_room_range: Optional[RoomRange] = None
     out_dir: str = "./_out_rir_sim_se"
+    # If False, skip writing wav/json outputs to disk (recommended for online training).
+    save_outputs: bool = True
+    # If True, include in-memory arrays (`dry`, `wet`, `ref`, `rir`, `rir_ref`) in return dict.
+    return_audio_arrays: bool = False
     # RIR length cap (seconds). Smaller values speed up convolution.
     rir_seconds: float = 2.0
     # Keep direct arrival + early reflections within this window for ref target.
@@ -24,6 +28,10 @@ class RIRSimSEConfig:
     # If pulse_recording is a directory, use at most this many files for fitting.
     # This is the highest-impact speed knob for large recording folders.
     max_fit_files: Optional[int] = 12
+    # Fit cache control for speeding up repeated generation.
+    enable_fit_cache: bool = True
+    fit_cache_path: Optional[str] = None
+    fit_cache_force_refit: bool = False
     # Array settings for multi-channel consistent simulation.
     mic_array_type: str = "linear"  # linear or circular
     mic_num: int = 4
