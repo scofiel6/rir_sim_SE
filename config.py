@@ -1,11 +1,11 @@
-﻿from dataclasses import dataclass
+from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 RoomRange = Dict[str, Tuple[float, float]]
 
 
 @dataclass
-class PipelineConfig:
+class RIRSimSEConfig:
     fs: int = 32000
     seed: int = 2026
     use_drr_c50: bool = True

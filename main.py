@@ -1,9 +1,9 @@
-﻿from config import PipelineConfig
-from pipeline import run_pipeline
+from config import RIRSimSEConfig
+from rir_sim_se import run_rir_sim_se
 
 
 if __name__ == "__main__":
-    cfg = PipelineConfig(
+    cfg = RIRSimSEConfig(
         fs=32000,
         seed=2026,
         use_drr_c50=True,
@@ -15,11 +15,13 @@ if __name__ == "__main__":
     pulse_recording = "/home/xukj/dataset_comsolTest/room_test"
     dry_wav = "/home/xukj/dataset_rir/sound_field_sim/test.wav"
 
-    out = run_pipeline(cfg, pulse_recording=pulse_recording, dry_wav=dry_wav)
+    out = run_rir_sim_se(cfg, pulse_recording=pulse_recording, dry_wav=dry_wav)
 
     print("=== rir_sim_SE done ===")
     print("rir:", out["rir_path"])
+    print("rir_direct:", out["rir_direct_path"])
     print("dry:", out["dry_path"])
     print("wet:", out["wet_path"])
+    print("ref:", out["ref_path"])
     print("drr/c50 strategy:", out["fit"].get("drr_c50_strategy"))
     print("rt60 median:", out["fit"].get("rt60_median"))

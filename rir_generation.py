@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 
 
 def generate_single_rir(gen, seed, use_drr_c50=True, rir_seconds=2.5):
@@ -7,14 +7,17 @@ def generate_single_rir(gen, seed, use_drr_c50=True, rir_seconds=2.5):
     dry_delta = np.zeros(rir_len, dtype=np.float64)
     dry_delta[0] = 1.0
 
-    y, _, meta = gen.generate(
+    # Delta excitation turns output into impulse response.
+    # `y` is full RIR, `ref` is direct-path-only reference.
+    y, ref, meta = gen.generate(
         dry_delta,
         seed=int(seed),
-        return_ref=False,
+        return_ref=True,
         ref_direct=True,
         branch="custom",
         normalize_output=False,
         apply_drr_c50=bool(use_drr_c50),
     )
     rir = np.asarray(y[0], dtype=np.float64)
-    return rir, meta
+    rir_direct = np.asarray(ref[0], dtype=np.float64)
+    return rir, rir_direct, meta

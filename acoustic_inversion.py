@@ -1,7 +1,7 @@
 ﻿from pathlib import Path
 import sys
 
-from config import PipelineConfig
+from config import RIRSimSEConfig
 from imrir_adapter import call_sample_room_params, call_simulate_rir
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +20,7 @@ def _build_single_mic_info():
     }
 
 
-def create_generator(cfg: PipelineConfig):
+def create_generator(cfg: RIRSimSEConfig):
     # Ensure im_rir_v2 adapter is loaded and callable.
     if (not callable(call_sample_room_params)) or (not callable(call_simulate_rir)):
         raise RuntimeError("im_rir_v2 adapter is not available.")
@@ -56,7 +56,7 @@ def create_generator(cfg: PipelineConfig):
     return gen
 
 
-def invert_acoustic_params(cfg: PipelineConfig, pulse_recording):
+def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
     gen = create_generator(cfg)
     fit = gen.fit_from_recordings(
         recordings=pulse_recording,
