@@ -25,6 +25,20 @@ class RIRSimSEConfig:
     # Keep a little late tail in ref (dB relative scale at early/late boundary).
     # Example: -26 dB means late part is strongly suppressed but not fully removed.
     ref_late_tail_db: float = -26.0
+    # Reference target mode:
+    # - "early_rir": ref from early-dominant RIR (current classic behavior).
+    # - "dry_distance": dry-like ref with broadband distance attenuation + early sparse taps.
+    ref_target_mode: str = "dry_distance"
+    # Broadband distance attenuation for "dry_distance" ref mode:
+    #   gain_dist = clip((ref_distance_ref_m / src_dist) ** ref_distance_power, min, max)
+    ref_distance_ref_m: float = 1.0
+    ref_distance_power: float = 1.0
+    ref_distance_gain_min: float = 0.2
+    ref_distance_gain_max: float = 1.2
+    # Number of early sparse reflection taps kept in "dry_distance" ref mode.
+    ref_distance_early_taps: int = 8
+    # Minimum spacing between selected sparse early taps in milliseconds.
+    ref_distance_min_tap_ms: float = 0.4
     # If pulse_recording is a directory, use at most this many files for fitting.
     # This is the highest-impact speed knob for large recording folders.
     max_fit_files: Optional[int] = 12

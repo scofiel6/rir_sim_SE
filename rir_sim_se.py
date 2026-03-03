@@ -130,6 +130,106 @@ def _as_2d_ch_first(x):
     return arr
 
 
+def _direct_index_from_rir(r, fs, search_ms=120.0):
+    x = np.asarray(r, dtype=np.float64).reshape(-1)
+    if x.size == 0:
+        return 0
+    n_search = min(x.size, max(16, int(round(float(search_ms) * 1e-3 * float(fs)))))
+    return int(np.argmax(np.abs(x[:n_search])))
+
+
+def _select_sparse_peak_indices(x_abs, n_taps, min_gap):
+    arr = np.asarray(x_abs, dtype=np.float64).reshape(-1)
+    n_taps = int(max(0, n_taps))
+    min_gap = int(max(1, min_gap))
+    if n_taps <= 0 or arr.size == 0:
+        return []
+    order = np.argsort(arr)[::-1]
+    chosen = []
+    for idx in order:
+        if float(arr[idx]) <= 0.0:
+            break
+        idx_i = int(idx)
+        ok = True
+        for c in chosen:
+            if abs(idx_i - c) < min_gap:
+                ok = False
+                break
+        if not ok:
+            continue
+        chosen.append(idx_i)
+        if len(chosen) >= n_taps:
+            break
+    return sorted(chosen)
+
+
+def _build_dry_distance_ref_rir(
+    rirs,
+    fs,
+    src_dist,
+    ref_early_ms,
+    distance_ref_m,
+    distance_power,
+    distance_gain_min,
+    distance_gain_max,
+    early_taps,
+    min_tap_ms,
+):
+    """
+    Build a dry-like multi-channel reference RIR:
+    - no frequency-dependent air absorption transfer from simulated RIR,
+    - keep direct + sparse early timing structure for spatial realism,
+    - apply broadband distance gain to keep distance cue.
+    """
+    r = _as_2d_ch_first(rirs)
+    n_ch, n = r.shape
+    fs = int(fs)
+    early_n = int(max(1, round(float(ref_early_ms) * 1e-3 * fs)))
+    min_gap = int(max(1, round(float(min_tap_ms) * 1e-3 * fs)))
+
+    dist = float(src_dist) if (src_dist is not None and np.isfinite(src_dist) and src_dist > 0.0) else float(distance_ref_m)
+    gain_dist = float((float(distance_ref_m) / max(dist, 1e-3)) ** float(distance_power))
+    gain_dist = float(np.clip(gain_dist, float(min(distance_gain_min, distance_gain_max)), float(max(distance_gain_min, distance_gain_max))))
+
+    out = np.zeros_like(r)
+    direct_idx = []
+    for ch in range(n_ch):
+        rc = r[ch]
+        i0 = _direct_index_from_rir(rc, fs=fs, search_ms=120.0)
+        direct_idx.append(int(i0))
+
+        h = np.zeros(n, dtype=np.float64)
+        if 0 <= i0 < n:
+            h[i0] = gain_dist
+            direct_amp = float(abs(rc[i0]))
+            if direct_amp < 1e-9:
+                direct_amp = 1.0
+
+            start = int(i0 + 1)
+            stop = int(min(n, i0 + early_n))
+            if stop > start and int(early_taps) > 0:
+                seg = rc[start:stop]
+                peak_rel = _select_sparse_peak_indices(np.abs(seg), n_taps=int(early_taps), min_gap=min_gap)
+                for ridx in peak_rel:
+                    ii = int(start + ridx)
+                    rel = float(np.clip(abs(rc[ii]) / direct_amp, 0.02, 0.65))
+                    h[ii] += float(np.sign(rc[ii])) * gain_dist * rel
+        out[ch] = h
+
+    trace = {
+        "mode": "dry_distance",
+        "src_dist_m": float(dist),
+        "distance_gain": float(gain_dist),
+        "distance_ref_m": float(distance_ref_m),
+        "distance_power": float(distance_power),
+        "early_window_ms": float(ref_early_ms),
+        "sparse_early_taps": int(early_taps),
+        "min_tap_ms": float(min_tap_ms),
+        "direct_indices": direct_idx,
+    }
+    return out, trace
+
+
 def _compute_array_aperture_m(cfg: RIRSimSEConfig):
     n = int(max(1, cfg.mic_num))
     j = float(max(0.0, cfg.mic_position_jitter_m))
@@ -364,7 +464,32 @@ def run_rir_sim_se(
         dry = 0.15 * np.sin(2.0 * np.pi * 220.0 * t) + 0.08 * np.sin(2.0 * np.pi * 440.0 * t)
 
     wet = _as_2d_ch_first(convolve_dry_rir(dry, rirs))
-    ref = _as_2d_ch_first(convolve_dry_rir(dry, rirs_ref))
+
+    ref_mode = str(getattr(cfg, "ref_target_mode", "early_rir")).strip().lower()
+    if ref_mode == "dry_distance":
+        ref_rir_to_use, ref_build_trace = _build_dry_distance_ref_rir(
+            rirs=rirs,
+            fs=int(cfg.fs),
+            src_dist=meta.get("src_dist"),
+            ref_early_ms=float(cfg.ref_early_ms),
+            distance_ref_m=float(cfg.ref_distance_ref_m),
+            distance_power=float(cfg.ref_distance_power),
+            distance_gain_min=float(cfg.ref_distance_gain_min),
+            distance_gain_max=float(cfg.ref_distance_gain_max),
+            early_taps=int(cfg.ref_distance_early_taps),
+            min_tap_ms=float(cfg.ref_distance_min_tap_ms),
+        )
+    elif ref_mode == "early_rir":
+        ref_rir_to_use = rirs_ref
+        ref_build_trace = {
+            "mode": "early_rir",
+            "early_window_ms": float(cfg.ref_early_ms),
+            "late_tail_db": float(cfg.ref_late_tail_db),
+        }
+    else:
+        raise ValueError(f"Unsupported ref_target_mode: {cfg.ref_target_mode!r}")
+
+    ref = _as_2d_ch_first(convolve_dry_rir(dry, ref_rir_to_use))
 
     mismatch = _sample_channel_mismatch_params(
         cfg=cfg,
@@ -391,7 +516,7 @@ def run_rir_sim_se(
         wet_path = out_dir / "wet.wav"
         ref_path = out_dir / "ref.wav"
         save_wav(rir_path, rirs, cfg.fs)
-        save_wav(rir_ref_path, rirs_ref, cfg.fs)
+        save_wav(rir_ref_path, ref_rir_to_use, cfg.fs)
         save_wav(dry_path, dry, cfg.fs)
         save_wav(wet_path, wet, cfg.fs)
         save_wav(ref_path, ref, cfg.fs)
@@ -416,6 +541,8 @@ def run_rir_sim_se(
         "rir_seconds": float(cfg.rir_seconds),
         "ref_early_ms": float(cfg.ref_early_ms),
         "ref_late_tail_db": float(cfg.ref_late_tail_db),
+        "ref_target_mode": ref_mode,
+        "ref_build_trace": ref_build_trace,
         "rir_path": None if rir_path is None else str(rir_path),
         "rir_ref_path": None if rir_ref_path is None else str(rir_ref_path),
         "dry_path": None if dry_path is None else str(dry_path),
@@ -441,6 +568,6 @@ def run_rir_sim_se(
         summary["wet"] = wet
         summary["ref"] = ref
         summary["rir"] = rirs
-        summary["rir_ref"] = rirs_ref
+        summary["rir_ref"] = ref_rir_to_use
 
     return summary
