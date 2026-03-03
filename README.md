@@ -77,6 +77,7 @@ Output keys:
   - key knobs:
     - `ref2_enabled`
     - `ref2_early_ms`
+    - `ref2_match_ref1_attenuation`
     - `ref2_distance_ref_m`
     - `ref2_distance_power`
     - `ref2_distance_gain_min` / `ref2_distance_gain_max`

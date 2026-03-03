@@ -165,6 +165,7 @@ def _select_sparse_peak_indices(x_abs, n_taps, min_gap):
 
 def _build_ref2_distance_rir(
     rirs,
+    ref1_rirs,
     fs,
     src_dist,
     ref_early_ms,
@@ -174,6 +175,7 @@ def _build_ref2_distance_rir(
     distance_gain_max,
     early_taps,
     min_tap_ms,
+    match_ref1_attenuation=True,
 ):
     """
     Build ref2 multi-channel reference RIR:
@@ -182,7 +184,11 @@ def _build_ref2_distance_rir(
     - apply broadband distance gain to keep distance cue.
     """
     r = _as_2d_ch_first(rirs)
+    r_ref1 = None if ref1_rirs is None else _as_2d_ch_first(ref1_rirs)
     n_ch, n = r.shape
+    if r_ref1 is not None and r_ref1.shape != r.shape:
+        raise ValueError(f"ref1_rirs shape mismatch: got {r_ref1.shape}, expected {r.shape}")
+
     fs = int(fs)
     early_n = int(max(1, round(float(ref_early_ms) * 1e-3 * fs)))
     min_gap = int(max(1, round(float(min_tap_ms) * 1e-3 * fs)))
@@ -193,14 +199,16 @@ def _build_ref2_distance_rir(
 
     out = np.zeros_like(r)
     direct_idx = []
+    gain_scale_used = []
+    gain_anchor = []
     for ch in range(n_ch):
         rc = r[ch]
         i0 = _direct_index_from_rir(rc, fs=fs, search_ms=120.0)
         direct_idx.append(int(i0))
 
-        h = np.zeros(n, dtype=np.float64)
+        h_unit = np.zeros(n, dtype=np.float64)
         if 0 <= i0 < n:
-            h[i0] = gain_dist
+            h_unit[i0] = 1.0
             direct_amp = float(abs(rc[i0]))
             if direct_amp < 1e-9:
                 direct_amp = 1.0
@@ -213,8 +221,28 @@ def _build_ref2_distance_rir(
                 for ridx in peak_rel:
                     ii = int(start + ridx)
                     rel = float(np.clip(abs(rc[ii]) / direct_amp, 0.02, 0.65))
-                    h[ii] += float(np.sign(rc[ii])) * gain_dist * rel
-        out[ch] = h
+                    h_unit[ii] += float(np.sign(rc[ii])) * rel
+
+            scale = float(gain_dist)
+            anchor = "distance_formula"
+            if bool(match_ref1_attenuation) and (r_ref1 is not None):
+                rr = r_ref1[ch]
+                st = int(max(0, i0))
+                ed = int(min(n, i0 + early_n))
+                if ed > st:
+                    rms_ref1 = float(np.sqrt(np.mean(rr[st:ed] ** 2) + 1e-12))
+                    rms_unit = float(np.sqrt(np.mean(h_unit[st:ed] ** 2) + 1e-12))
+                    if rms_unit > 0.0:
+                        scale = float(rms_ref1 / rms_unit)
+                        anchor = "ref1_early_rms"
+
+            out[ch] = h_unit * scale
+            gain_scale_used.append(float(scale))
+            gain_anchor.append(anchor)
+        else:
+            out[ch] = h_unit
+            gain_scale_used.append(0.0)
+            gain_anchor.append("invalid_direct_index")
 
     trace = {
         "mode": "ref2_distance",
@@ -226,6 +254,9 @@ def _build_ref2_distance_rir(
         "sparse_early_taps": int(early_taps),
         "min_tap_ms": float(min_tap_ms),
         "direct_indices": direct_idx,
+        "match_ref1_attenuation": bool(match_ref1_attenuation),
+        "gain_scale_used": gain_scale_used,
+        "gain_anchor": gain_anchor,
     }
     return out, trace
 
@@ -486,6 +517,7 @@ def run_rir_sim_se(
         ref2_early_ms = cfg.ref_early_ms if cfg.ref2_early_ms is None else float(cfg.ref2_early_ms)
         ref2_rir, ref2_build_trace = _build_ref2_distance_rir(
             rirs=rirs,
+            ref1_rirs=ref1_rir,
             fs=int(cfg.fs),
             src_dist=meta.get("src_dist"),
             ref_early_ms=float(ref2_early_ms),
@@ -495,6 +527,7 @@ def run_rir_sim_se(
             distance_gain_max=float(cfg.ref2_distance_gain_max),
             early_taps=int(cfg.ref2_early_taps),
             min_tap_ms=float(cfg.ref2_min_tap_ms),
+            match_ref1_attenuation=bool(cfg.ref2_match_ref1_attenuation),
         )
         ref2 = _as_2d_ch_first(convolve_dry_rir(dry, ref2_rir))
         ref2_build_trace["enabled"] = True
@@ -565,6 +598,7 @@ def run_rir_sim_se(
         "ref1_build_trace": ref1_build_trace,
         "ref2_enabled": ref2_enabled,
         "ref2_early_ms": float(cfg.ref_early_ms if cfg.ref2_early_ms is None else cfg.ref2_early_ms),
+        "ref2_match_ref1_attenuation": bool(cfg.ref2_match_ref1_attenuation),
         "ref2_build_trace": ref2_build_trace,
         "rir_path": None if rir_path is None else str(rir_path),
         "rir_ref_path": None if rir_ref_path is None else str(rir_ref_path),

@@ -36,6 +36,9 @@ class RIRSimSEConfig:
     ref2_distance_gain_max: float = 1.2
     ref2_early_taps: int = 8
     ref2_min_tap_ms: float = 0.4
+    # If True, ref2 attenuation is matched to ref1 early energy per channel.
+    # This keeps ref2 and ref1 at comparable distance attenuation strength.
+    ref2_match_ref1_attenuation: bool = True
     # If pulse_recording is a directory, use at most this many files for fitting.
     # This is the highest-impact speed knob for large recording folders.
     max_fit_files: Optional[int] = 12
