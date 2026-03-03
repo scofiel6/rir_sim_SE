@@ -14,3 +14,13 @@ class RIRSimSEConfig:
     custom_room_range: Optional[RoomRange] = None
     generic_room_range: Optional[RoomRange] = None
     out_dir: str = "./_out_rir_sim_se"
+    # RIR length cap (seconds). Smaller values speed up convolution.
+    rir_seconds: float = 2.0
+    # Keep direct arrival + early reflections within this window for ref target.
+    ref_early_ms: float = 20.0
+    # Keep a little late tail in ref (dB relative scale at early/late boundary).
+    # Example: -26 dB means late part is strongly suppressed but not fully removed.
+    ref_late_tail_db: float = -26.0
+    # If pulse_recording is a directory, use at most this many files for fitting.
+    # This is the highest-impact speed knob for large recording folders.
+    max_fit_files: Optional[int] = 12

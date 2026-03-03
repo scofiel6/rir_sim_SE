@@ -9,21 +9,50 @@ from config import RIRSimSEConfig
 from rir_generation import generate_single_rir
 
 
+def _resolve_fit_recordings(pulse_recording, max_fit_files, seed):
+    if max_fit_files is None:
+        return pulse_recording
+    max_fit_files = int(max_fit_files)
+    if max_fit_files <= 0:
+        return pulse_recording
+
+    p = Path(pulse_recording)
+    if not p.is_dir():
+        return pulse_recording
+
+    exts = (".wav", ".flac", ".ogg", ".mp3", ".m4a")
+    files = []
+    for ext in exts:
+        files.extend([str(x) for x in p.rglob(f"*{ext}")])
+    files = sorted(set(files))
+    if len(files) <= max_fit_files:
+        return files
+
+    rng = np.random.default_rng(int(seed))
+    idx = rng.choice(len(files), size=max_fit_files, replace=False)
+    idx = np.sort(idx)
+    return [files[int(i)] for i in idx]
+
+
 def run_rir_sim_se(cfg: RIRSimSEConfig, pulse_recording, dry_wav=None):
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    gen, fit = invert_acoustic_params(cfg, pulse_recording)
-    rir, rir_direct, meta = generate_single_rir(
+    fit_items = _resolve_fit_recordings(pulse_recording, cfg.max_fit_files, cfg.seed)
+    gen, fit = invert_acoustic_params(cfg, fit_items)
+    rir, rir_ref, meta = generate_single_rir(
         gen,
         seed=cfg.seed + 1,
         use_drr_c50=cfg.use_drr_c50,
+        rir_seconds=cfg.rir_seconds,
+        ref_early_ms=cfg.ref_early_ms,
+        ref_late_tail_db=cfg.ref_late_tail_db,
     )
 
     rir_path = out_dir / "rir.wav"
-    rir_direct_path = out_dir / "rir_direct.wav"
+    rir_ref_path = out_dir / "rir_ref.wav"
     save_wav(rir_path, rir, cfg.fs)
-    save_wav(rir_direct_path, rir_direct, cfg.fs)
+    save_wav(rir_ref_path, rir_ref, cfg.fs)
 
     if dry_wav is not None and Path(dry_wav).exists():
         dry, dry_fs = read_audio_mono(dry_wav)
@@ -35,8 +64,8 @@ def run_rir_sim_se(cfg: RIRSimSEConfig, pulse_recording, dry_wav=None):
         dry = 0.15 * np.sin(2.0 * np.pi * 220.0 * t) + 0.08 * np.sin(2.0 * np.pi * 440.0 * t)
 
     wet = convolve_dry_rir(dry, rir)
-    # Direct-path-only target reference for SE supervision (no early/late reverberation tail).
-    ref = convolve_dry_rir(dry, rir_direct)
+    # SE reference target: early-dominant, late-suppressed.
+    ref = convolve_dry_rir(dry, rir_ref)
 
     peak_wet = float(np.max(np.abs(wet))) if wet.size > 0 else 0.0
     peak_ref = float(np.max(np.abs(ref))) if ref.size > 0 else 0.0
@@ -56,10 +85,14 @@ def run_rir_sim_se(cfg: RIRSimSEConfig, pulse_recording, dry_wav=None):
     summary = {
         "fs": int(cfg.fs),
         "pulse_recording": str(pulse_recording),
+        "fit_items_used": fit_items if isinstance(fit_items, list) else [str(fit_items)],
         "dry_source": dry_id,
         "use_drr_c50": bool(cfg.use_drr_c50),
+        "rir_seconds": float(cfg.rir_seconds),
+        "ref_early_ms": float(cfg.ref_early_ms),
+        "ref_late_tail_db": float(cfg.ref_late_tail_db),
         "rir_path": str(rir_path),
-        "rir_direct_path": str(rir_direct_path),
+        "rir_ref_path": str(rir_ref_path),
         "dry_path": str(dry_path),
         "wet_path": str(wet_path),
         "ref_path": str(ref_path),
@@ -72,4 +105,3 @@ def run_rir_sim_se(cfg: RIRSimSEConfig, pulse_recording, dry_wav=None):
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     return summary
-
