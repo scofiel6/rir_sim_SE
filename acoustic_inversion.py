@@ -144,21 +144,46 @@ def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
     if mode not in ("fixed", "auto", "from_recording"):
         mode = "from_recording"
 
-    # User's recordings are IR captures, so we default to from_recording mode.
-    fit = gen.fit_from_recordings(
-        recordings=pulse_recording,
-        room_size_hint=cfg.room_size_hint,
-        room_jitter_ratio=cfg.room_jitter_ratio,
-        rt60_min_max=(rt60_lo, rt60_hi),
-        drr_prior_range_db=(2.0, 10.0),
-        c50_prior_range_db=(6.0, 16.0),
-        drr_c50_jitter_db=float(max(0.0, cfg.inversion_drr_c50_jitter_db)),
-        drr_c50_mode=mode,
-        drr_c50_from_recording_jitter_db=float(max(0.0, cfg.inversion_drr_c50_from_recording_jitter_db)),
-        fit_seed=cfg.seed,
-        update_generator=True,
-    )
+    def _fit_with_mode(mode_use: str):
+        return gen.fit_from_recordings(
+            recordings=pulse_recording,
+            room_size_hint=cfg.room_size_hint,
+            room_jitter_ratio=cfg.room_jitter_ratio,
+            rt60_min_max=(rt60_lo, rt60_hi),
+            drr_prior_range_db=(2.0, 10.0),
+            c50_prior_range_db=(6.0, 16.0),
+            drr_c50_jitter_db=float(max(0.0, cfg.inversion_drr_c50_jitter_db)),
+            drr_c50_mode=str(mode_use),
+            drr_c50_from_recording_jitter_db=float(max(0.0, cfg.inversion_drr_c50_from_recording_jitter_db)),
+            fit_seed=cfg.seed,
+            update_generator=True,
+        )
+
+    try:
+        fit = _fit_with_mode(mode)
+        effective_mode = mode
+    except ValueError as e:
+        msg = str(e)
+        # Some measured IR files may fail strict impulse-like check.
+        # Fallback to auto mode so inversion continues instead of hard-failing.
+        if mode == "from_recording" and "requires impulse-like recordings" in msg:
+            fit = _fit_with_mode("auto")
+            effective_mode = "auto"
+            if isinstance(fit, dict):
+                warnings = fit.get("warnings")
+                if not isinstance(warnings, list):
+                    warnings = []
+                warnings.append(
+                    "Requested drr_c50_mode='from_recording' but at least one file "
+                    "failed impulse-like check; fallback to drr_c50_mode='auto'."
+                )
+                fit["warnings"] = warnings
+        else:
+            raise
+
+    if isinstance(fit, dict):
+        fit["drr_c50_mode_requested"] = str(mode)
+        fit["drr_c50_mode_effective"] = str(effective_mode)
 
     gen = _apply_conservative_postfit_clamp(gen, cfg)
     return gen, fit
-
