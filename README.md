@@ -30,8 +30,7 @@ Output keys:
 - `fit`
 - `meta`
 - `engine_manifest`
-- `mismatch_wet`
-- `mismatch_ref`
+- `mismatch`
 
 ## Reproducibility
 - Engine vendoring + hash manifest: `reproducibility/engine_manifest.json`
@@ -45,6 +44,18 @@ Output keys:
 - `RIRSimSEConfig.mic_spacing` / `mic_radius`: array geometry
 - `RIRSimSEConfig.enable_channel_mismatch`: enable per-channel gain/delay/noise perturbation
 - `RIRSimSEConfig.enable_channel_white_noise`: additive white-noise switch in post mismatch stage
+- Delay mismatch is physically bounded by aperture and fs:
+  - `|delay_samples| <= ceil((array_aperture / c) * fs)`
+- Delay is applied by zero-padding shift, never circular wrap-around.
+
+## Multi-channel DRR/C50 consistency
+- DRR/C50 shaping uses shared direct/early/late gains across channels.
+- This avoids per-channel independent shaping that can distort ITD/ILD cues.
+
+## Material/scattering model
+- Material sampling uses a controllable material library (wall/floor/ceiling categories).
+- Each material has frequency-dependent absorption and scattering curves.
+- Per-face sampling applies bounded perturbation and logs trace info in metadata.
 
 For pure measured-room inversion -> RIR -> convolution (no additive white noise), use:
 - `enable_channel_mismatch=False`

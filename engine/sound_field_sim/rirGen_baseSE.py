@@ -619,6 +619,77 @@ class BaseSERIRGenerator:
             r[m_dir] *= np.sqrt(x)
         return r
 
+    def _solve_shared_drr_c50_segment_gains(self, rir_ref, drr_tgt_db, c50_tgt_db):
+        """
+        Solve one shared set of segment gains for all channels.
+
+        Why:
+        Applying independent DRR/C50 shaping per channel can distort inter-channel
+        spatial cues (ITD/ILD). Shared gains preserve multi-channel consistency.
+        """
+        r = np.asarray(rir_ref, dtype=np.float64).reshape(-1)
+        if r.size < 16:
+            return {"dir": 1.0, "early": 1.0, "late": 1.0}
+
+        m_dir, m_early, m_late, _ = self._rir_windows(r)
+        m_er = np.logical_and(m_early, ~m_dir)
+        eps = 1e-12
+
+        e_d = float(np.sum(r[m_dir] ** 2) + eps)
+        e_er = float(np.sum(r[m_er] ** 2) + eps)
+        e_l = float(np.sum(r[m_late] ** 2) + eps)
+
+        D = 10.0 ** (float(drr_tgt_db) / 10.0)
+        C = 10.0 ** (float(c50_tgt_db) / 10.0)
+
+        # Constrained solution: keep early gain as anchor (1.0), solve direct/late.
+        # If C<=D, exact positive solution may not exist; we fall back to clipped values.
+        g_early_e = 1.0
+        denom = max((C - D), 1e-3) * e_l
+        g_late_e = ((D + 1.0) * e_er) / max(denom, eps)
+        g_late_e = float(np.clip(g_late_e, 0.05, 30.0))
+
+        g_dir_e = D * (g_early_e * e_er + g_late_e * e_l) / max(e_d, eps)
+        g_dir_e = float(np.clip(g_dir_e, 0.05, 30.0))
+
+        return {
+            "dir": float(np.sqrt(g_dir_e)),
+            "early": float(np.sqrt(g_early_e)),
+            "late": float(np.sqrt(g_late_e)),
+        }
+
+    def _apply_segment_gains(self, rir, gains):
+        r = np.asarray(rir, dtype=np.float64).copy().reshape(-1)
+        if r.size < 16:
+            return r
+        m_dir, m_early, m_late, _ = self._rir_windows(r)
+        m_er = np.logical_and(m_early, ~m_dir)
+        r[m_dir] *= float(gains["dir"])
+        r[m_er] *= float(gains["early"])
+        r[m_late] *= float(gains["late"])
+        return r
+
+    def _apply_drr_c50_target_multich(self, rirs, drr_tgt_db, c50_tgt_db, ref_ch=0):
+        if len(rirs) == 0:
+            return [], {"enabled": False}
+        ref_i = int(np.clip(int(ref_ch), 0, len(rirs) - 1))
+        gains = self._solve_shared_drr_c50_segment_gains(
+            rirs[ref_i],
+            drr_tgt_db=drr_tgt_db,
+            c50_tgt_db=c50_tgt_db,
+        )
+        out = [self._apply_segment_gains(r, gains) for r in rirs]
+        trace = {
+            "enabled": True,
+            "shared_segment_gains": {
+                "dir": float(gains["dir"]),
+                "early": float(gains["early"]),
+                "late": float(gains["late"]),
+            },
+            "reference_channel": int(ref_i),
+        }
+        return out, trace
+
     def _apply_physical_calibration(self, rir, src_xyz, mic_xyz):
         """
         Calibrate RIR amplitude using distance-based direct-path anchor.
@@ -1230,6 +1301,10 @@ class BaseSERIRGenerator:
         c50_real = None
         physical_scales = []
         physical_target_direct_peaks = []
+        drr_c50_shape_trace = {"enabled": False}
+        raw_rirs = []
+        rt60_out_ref = None
+
         for ch in range(n_ch):
             rir, rt60_out = _call_simulate_rir(
                 imv2,
@@ -1243,8 +1318,22 @@ class BaseSERIRGenerator:
                 params=params,
                 rng=rng,
             )
-            if apply_drr_c50:
-                rir = self._apply_drr_c50_target(rir, drr_tgt_db=drr_tgt, c50_tgt_db=c50_tgt)
+            raw_rirs.append(np.asarray(rir, dtype=np.float64))
+            if ch == 0:
+                rt60_out_ref = rt60_out
+
+        if apply_drr_c50:
+            shaped_rirs, drr_c50_shape_trace = self._apply_drr_c50_target_multich(
+                raw_rirs,
+                drr_tgt_db=drr_tgt,
+                c50_tgt_db=c50_tgt,
+                ref_ch=0,
+            )
+        else:
+            shaped_rirs = [np.asarray(r, dtype=np.float64).copy() for r in raw_rirs]
+
+        for ch in range(n_ch):
+            rir = shaped_rirs[ch]
             if self.enable_physical_calibration:
                 rir, g_phy, tgt_dp = self._apply_physical_calibration(rir, src_xyz=src_loc, mic_xyz=mic_loc[:, ch])
             else:
@@ -1255,7 +1344,7 @@ class BaseSERIRGenerator:
             y[ch] = fftconvolve(clean, rir)[:n]
             if ch == 0:
                 drr_real, c50_real = self._compute_drr_c50(rir)
-                rt60_real = float(rt60_out) if rt60_out is not None else None
+                rt60_real = float(rt60_out_ref) if rt60_out_ref is not None else None
 
         ref = None
         if return_ref:
@@ -1305,6 +1394,16 @@ class BaseSERIRGenerator:
                     params_trace["engine_trace"] = params["_trace_last"]
                 except Exception:
                     pass
+            if "material_trace" in params:
+                try:
+                    params_trace["material_trace"] = params["material_trace"]
+                except Exception:
+                    pass
+            if "face_categories" in params:
+                try:
+                    params_trace["face_categories"] = params["face_categories"]
+                except Exception:
+                    pass
 
         meta = {
             "sample_seed": int(seed),
@@ -1332,6 +1431,7 @@ class BaseSERIRGenerator:
             "final_norm_gain": float(norm_gain),
             "mix_peak_before_norm": float(mix_peak_before_norm),
             "params_trace": params_trace,
+            "drr_c50_shape_trace": drr_c50_shape_trace,
         }
         return y, ref, meta
 

@@ -136,6 +136,135 @@ class SoftCardioid(Cardioid):
         return self.alpha + (1 - self.alpha) * base
 
 
+MATERIAL_LIBRARY = {
+    "painted_wall": {
+        "absorption": [0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
+        "scattering": [0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22],
+    },
+    "gypsum_board": {
+        "absorption": [0.10, 0.10, 0.08, 0.07, 0.06, 0.05, 0.05],
+        "scattering": [0.08, 0.10, 0.12, 0.14, 0.16, 0.18, 0.20],
+    },
+    "concrete": {
+        "absorption": [0.01, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02],
+        "scattering": [0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16],
+    },
+    "glass": {
+        "absorption": [0.03, 0.03, 0.03, 0.04, 0.05, 0.06, 0.06],
+        "scattering": [0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
+    },
+    "curtain_heavy": {
+        "absorption": [0.15, 0.25, 0.40, 0.55, 0.65, 0.70, 0.72],
+        "scattering": [0.12, 0.14, 0.16, 0.20, 0.24, 0.30, 0.36],
+    },
+    "carpet_floor": {
+        "absorption": [0.08, 0.12, 0.20, 0.30, 0.40, 0.50, 0.55],
+        "scattering": [0.10, 0.14, 0.18, 0.22, 0.26, 0.32, 0.36],
+    },
+    "wood_floor": {
+        "absorption": [0.05, 0.06, 0.08, 0.10, 0.11, 0.12, 0.12],
+        "scattering": [0.08, 0.10, 0.12, 0.16, 0.20, 0.24, 0.28],
+    },
+    "acoustic_tile_ceiling": {
+        "absorption": [0.30, 0.45, 0.65, 0.75, 0.75, 0.70, 0.65],
+        "scattering": [0.18, 0.22, 0.28, 0.34, 0.38, 0.40, 0.42],
+    },
+    "plaster_ceiling": {
+        "absorption": [0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16],
+        "scattering": [0.10, 0.12, 0.14, 0.18, 0.22, 0.26, 0.30],
+    },
+}
+
+
+def _weighted_scattering_scalar(scattering_curve, center_freqs):
+    s = np.asarray(scattering_curve, dtype=np.float64)
+    f = np.asarray(center_freqs, dtype=np.float64)
+    w = np.sqrt(np.maximum(f, 1.0) / np.maximum(np.min(f), 1.0))
+    return float(np.clip(np.average(s, weights=w), 0.05, 0.95))
+
+
+def _sample_face_categories(rng):
+    wall_candidates = ["painted_wall", "gypsum_board", "concrete", "glass", "curtain_heavy"]
+    floor_candidates = ["carpet_floor", "wood_floor"]
+    ceil_candidates = ["acoustic_tile_ceiling", "plaster_ceiling"]
+    return {
+        "west": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
+        "east": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
+        "south": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
+        "north": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
+        "floor": floor_candidates[int(rng.integers(0, len(floor_candidates)))],
+        "ceiling": ceil_candidates[int(rng.integers(0, len(ceil_candidates)))],
+    }
+
+
+def _build_materials_from_library(center_freqs, alpha_mean, face_categories, rng):
+    materials = {}
+    trace = {}
+    coeff_stack = []
+    for face, cat in face_categories.items():
+        base = MATERIAL_LIBRARY[cat]
+        abs_base = np.asarray(base["absorption"], dtype=np.float64)
+        scat_base = np.asarray(base["scattering"], dtype=np.float64)
+
+        shape = abs_base / max(float(np.mean(abs_base)), 1e-6)
+        spectral_jitter = rng.uniform(0.92, 1.08, size=abs_base.shape[0])
+        face_scale = float(rng.uniform(0.90, 1.10))
+        coeffs = np.clip(alpha_mean * shape * spectral_jitter * face_scale, 0.01, 0.98)
+        scat_curve = np.clip(scat_base * rng.uniform(0.90, 1.10, size=scat_base.shape[0]), 0.05, 0.98)
+        scat_scalar = _weighted_scattering_scalar(scat_curve, center_freqs)
+
+        materials[face] = pra.Material(
+            {"coeffs": coeffs, "scattering": scat_scalar, "center_freqs": center_freqs}
+        )
+        trace[face] = {
+            "category": cat,
+            "absorption_coeffs": coeffs.tolist(),
+            "scattering_curve": scat_curve.tolist(),
+            "scattering_scalar": float(scat_scalar),
+        }
+        coeff_stack.append(coeffs)
+
+    alpha_bar = np.mean(np.stack(coeff_stack, axis=0), axis=0)
+    return materials, trace, alpha_bar
+
+
+def _sample_common_room_params(lx, ly, lz, fs, rng, rt60_target):
+    center_freqs = np.array([125, 250, 500, 1000, 2000, 4000, 8000], dtype=np.float64)
+    room_dim = [float(lx), float(ly), float(lz)]
+    rt60_value = float(rng.uniform(0.1, 1.0) if rt60_target is None else rt60_target)
+
+    V = float(lx * ly * lz)
+    S_total = float(2.0 * (lx * ly + lx * lz + ly * lz))
+    alpha_mean = float(np.clip(0.161 * V / max(S_total * rt60_value, 1e-6), 0.03, 0.75))
+
+    face_categories = _sample_face_categories(rng)
+    materials, material_trace, alpha_bar = _build_materials_from_library(
+        center_freqs=center_freqs,
+        alpha_mean=alpha_mean,
+        face_categories=face_categories,
+        rng=rng,
+    )
+
+    log_fc = np.log(center_freqs)
+    alpha_continuous = interp1d(log_fc, alpha_bar, kind="linear", fill_value="extrapolate")
+
+    L_min = min(room_dim)
+    t_er = float(rng.uniform(0.06, 0.12))
+    max_order = int(np.ceil(C * t_er / max(L_min, 1e-6)))
+    max_order = int(np.clip(max_order, 5, 40))
+
+    return {
+        "room_dim": room_dim,
+        "RT60_target": rt60_value,
+        "center_freqs": center_freqs,
+        "alpha_continuous": alpha_continuous,
+        "materials": materials,
+        "material_trace": material_trace,
+        "face_categories": face_categories,
+        "max_order": max_order,
+    }
+
+
 def sample_room_params(lx, ly, lz, fs=32000, rng=None, rt60_target=None):
     """Sample (or set) room-level parameters once, then reuse across multiple mics.
 
@@ -143,57 +272,23 @@ def sample_room_params(lx, ly, lz, fs=32000, rng=None, rt60_target=None):
     """
     rng = np.random.default_rng(0) if rng is None else rng
 
-    center_freqs = np.array([125, 250, 500, 1000, 2000, 4000, 8000])
-    room_dim = [lx, ly, lz]
-
-    # RT60
-    RT60_target = float(rng.uniform(0.1, 1.0) if rt60_target is None else rt60_target)
-
-    # rt60 => mean absorption
-    V = lx * ly * lz
-    S_total = 2 * (lx * ly + lx * lz + ly * lz)
-    alpha_mean = np.clip(0.161 * V / (S_total * RT60_target), 0.05, 0.6)
-
-    # freq. prior (shape)
-    wall_base = {
-        "glass":   np.array([0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.10]),
-        "wall":    np.array([0.05, 0.08, 0.12, 0.18, 0.25, 0.30, 0.35]),
-        "curtain": np.array([0.08, 0.15, 0.30, 0.45, 0.55, 0.65, 0.70]),
-        "ceiling": np.array([0.10, 0.20, 0.35, 0.50, 0.60, 0.70, 0.70]),
-        "floor":   np.array([0.04, 0.06, 0.10, 0.15, 0.20, 0.25, 0.30]),
-    }
-    shape_prior = np.mean(np.stack(list(wall_base.values())), axis=0)
-    shape_prior /= np.mean(shape_prior)
-
-    shape_jitter = shape_prior * rng.uniform(0.85, 1.15, size=shape_prior.shape)
-    alpha_bar = np.clip(alpha_mean * shape_jitter, 0.02, 0.9)
-
-    # continuous interp in log-freq
-    log_fc = np.log(center_freqs)
-    alpha_continuous = interp1d(log_fc, alpha_bar, kind='cubic', fill_value='extrapolate')
-
-    # geo ER
-    material = {
-        k: pra.Material({
-            'coeffs': wall_alpha(alpha_bar, rng=rng),
-            'scattering': float(rng.uniform(0.2, 0.6)),
-            'center_freqs': center_freqs
-        }) for k in ['west', 'east', 'south', 'north', 'floor', 'ceiling']
-    }
-
-    # max order
-    L_min = min(room_dim)
-    t_er = float(rng.uniform(0.06, 0.12))
-    max_order = int(np.ceil(C * t_er / L_min))
-    max_order = int(np.clip(max_order, 5, 40))
-
+    p = _sample_common_room_params(
+        lx=lx,
+        ly=ly,
+        lz=lz,
+        fs=fs,
+        rng=rng,
+        rt60_target=rt60_target,
+    )
     return {
-        'room_dim': room_dim,
-        'RT60_target': RT60_target,
-        'center_freqs': center_freqs,
-        'alpha_continuous': alpha_continuous,
-        'materials': material,
-        'max_order': max_order,
+        "room_dim": p["room_dim"],
+        "RT60_target": p["RT60_target"],
+        "center_freqs": p["center_freqs"],
+        "alpha_continuous": p["alpha_continuous"],
+        "materials": p["materials"],
+        "material_trace": p["material_trace"],
+        "face_categories": p["face_categories"],
+        "max_order": p["max_order"],
     }
 
 
@@ -327,56 +422,23 @@ def sample_room_params_legacy(lx, ly, lz, fs, rt60_override=None, rng=None):
     """
     rng = np.random.default_rng(0) if rng is None else rng
 
-    center_freqs = np.array([125, 250, 500, 1000, 2000, 4000, 8000])
-    room_dim = [lx, ly, lz]
-
-    RT60_target = float(rng.uniform(0.1, 1.0) if rt60_override is None else rt60_override)
-
-    V = lx * ly * lz
-    S_total = 2 * (lx*ly + lx*lz + ly*lz)
-    alpha_mean = np.clip(0.161 * V / (S_total * max(RT60_target, 1e-3)), 0.05, 0.6)
-
-    wall_base = {
-        "glass":   np.array([0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.10]),
-        "wall":    np.array([0.05, 0.08, 0.12, 0.18, 0.25, 0.30, 0.35]),
-        "curtain": np.array([0.08, 0.15, 0.30, 0.45, 0.55, 0.65, 0.70]),
-        "ceiling": np.array([0.10, 0.20, 0.35, 0.50, 0.60, 0.70, 0.70]),
-        "floor":   np.array([0.04, 0.06, 0.10, 0.15, 0.20, 0.25, 0.30]),
-    }
-    shape_prior = np.mean(np.stack(list(wall_base.values())), axis=0)
-    shape_prior /= np.mean(shape_prior)
-
-    shape_jitter = shape_prior * rng.uniform(0.85, 1.15, size=shape_prior.shape)
-    alpha_bar = np.clip(alpha_mean * shape_jitter, 0.02, 0.9)
-
-    log_fc = np.log(center_freqs)
-    alpha_continuous = interp1d(
-        log_fc,
-        alpha_bar,
-        kind='cubic',
-        fill_value='extrapolate'
+    p = _sample_common_room_params(
+        lx=lx,
+        ly=ly,
+        lz=lz,
+        fs=fs,
+        rng=rng,
+        rt60_target=rt60_override,
     )
-
-    material = {
-        k: pra.Material({
-            'coeffs': wall_alpha(alpha_bar, rng=rng),
-            'scattering': float(rng.uniform(0.2, 0.6)),
-            'center_freqs': center_freqs
-        }) for k in ['west', 'east', 'south', 'north', 'floor', 'ceiling']
-    }
-
-    L_min = min(room_dim)
-    t_er = float(rng.uniform(0.06, 0.12))
-    max_order = int(np.ceil(C * t_er / L_min))
-    max_order = int(np.clip(max_order, 5, 40))
-
     return {
-        'RT60_target': RT60_target,
-        'center_freqs': center_freqs,
-        'alpha_continuous': alpha_continuous,
-        'material': material,
-        'max_order': max_order,
-        'room_dim': room_dim,
+        "RT60_target": p["RT60_target"],
+        "center_freqs": p["center_freqs"],
+        "alpha_continuous": p["alpha_continuous"],
+        "material": p["materials"],
+        "material_trace": p["material_trace"],
+        "face_categories": p["face_categories"],
+        "max_order": p["max_order"],
+        "room_dim": p["room_dim"],
     }
 
 
