@@ -1,0 +1,4 @@
+-r requirements.txt
+black>=24.0
+ruff>=0.5
+pytest>=7.4

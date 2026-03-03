@@ -57,11 +57,16 @@ def generate_single_rir(
         normalize_output=False,
         apply_drr_c50=bool(use_drr_c50),
     )
-    rir = np.asarray(y[0], dtype=np.float64)
-    rir_ref = _build_ref_rir_from_full_rir(
-        rir,
-        fs=fs,
-        ref_early_ms=float(ref_early_ms),
-        ref_late_tail_db=float(ref_late_tail_db),
-    )
-    return rir, rir_ref, meta
+    rirs = np.asarray(y, dtype=np.float64)
+    if rirs.ndim == 1:
+        rirs = rirs.reshape(1, -1)
+
+    refs = np.zeros_like(rirs)
+    for ch in range(rirs.shape[0]):
+        refs[ch] = _build_ref_rir_from_full_rir(
+            rirs[ch],
+            fs=fs,
+            ref_early_ms=float(ref_early_ms),
+            ref_late_tail_db=float(ref_late_tail_db),
+        )
+    return rirs, refs, meta

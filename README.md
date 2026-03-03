@@ -1,42 +1,71 @@
 # rir_sim_SE
 
-This project targets a small-room workflow:
-1. real recorded pulse audio input,
-2. acoustic parameter inversion,
-3. RIR simulation via `im_rir_v2`,
-4. SE-ready `wet/ref` data generation.
+Small-room SE data project:
+1. real pulse recordings -> acoustic inversion,
+2. inversion priors -> `im_rir_v2` physical simulation,
+3. full RIR + SE reference RIR generation,
+4. dry -> wet/ref synthesis for SE training.
 
-The `ref` signal is early-dominant, not pure direct-path:
-- direct and early reflections are kept,
-- late tail is strongly attenuated but still partially preserved.
+`ref` is early-dominant (direct + early reflections) with an attenuated late tail.
+Multi-channel arrays are supported (linear/circular), with optional channel mismatch.
 
-## Files
-- `config.py`: `RIRSimSEConfig` runtime config
-- `audio_io.py`: audio I/O, resampling, convolution
-- `imrir_adapter.py`: `im_rir_v2` compatibility adapter
-- `acoustic_inversion.py`: acoustic inversion module
-- `rir_generation.py`: single-RIR generation (full RIR + early-dominant ref RIR)
-- `rir_sim_se.py`: end-to-end entry `run_rir_sim_se(...)`
-- `main.py`: runnable demo
+## Core files
+- `config.py`: `RIRSimSEConfig`
+- `acoustic_inversion.py`: inversion flow
+- `rir_generation.py`: full-RIR/ref-RIR builder
+- `rir_sim_se.py`: main API `run_rir_sim_se(...)`
+- `engine/sound_field_sim/`: vendored physical engine sources
+- `eval/`: metric and distribution evaluation utilities
 
 ## Main API
 ```python
 out = run_rir_sim_se(cfg, pulse_recording=pulse_recording, dry_wav=dry_wav)
 ```
 
-Returned fields include:
-- `rir_path`: full RIR
-- `rir_ref_path`: early-dominant reference RIR
-- `wet_path`: `dry * rir`
-- `ref_path`: `dry * rir_ref` (SE supervision target)
-- `fit`: inverted acoustic parameter summary
+Output keys:
+- `rir_path`
+- `rir_ref_path`
+- `wet_path`
+- `ref_path`
+- `fit`
+- `meta`
+- `engine_manifest`
+- `mismatch_wet`
+- `mismatch_ref`
 
-Speed knobs in `RIRSimSEConfig`:
-- `max_fit_files`: limit number of recordings used in inversion.
-- `rir_seconds`: cap generated RIR length.
-- `ref_early_ms` and `ref_late_tail_db`: control ref strictness.
+## Reproducibility
+- Engine vendoring + hash manifest: `reproducibility/engine_manifest.json`
+- RNG policy checker: `tools/check_rng_policy.py`
+- Rebuild manifest: `python tools/build_engine_manifest.py`
+- Details: `REPRODUCIBILITY.md`
 
-## Run
+## Array and device realism
+- `RIRSimSEConfig.mic_array_type`: `linear` or `circular`
+- `RIRSimSEConfig.mic_num`: number of channels
+- `RIRSimSEConfig.mic_spacing` / `mic_radius`: array geometry
+- `RIRSimSEConfig.enable_channel_mismatch`: enable per-channel gain/delay/noise perturbation
+
+## Quality evaluation
+- Compare real/sim RIR distributions:
+```bash
+python eval/evaluate_rir_sets.py --real /path/to/real --sim /path/to/sim --out eval_report.json
+```
+- Metrics include: `T20/T30/EDT`, `DRR`, `C50`, `C80`, and KS distance.
+
+## Dev baseline
+- Install:
+```bash
+pip install -r requirements-dev.txt
+```
+- Run checks:
+```bash
+ruff check .
+black --check .
+python tools/check_rng_policy.py
+pytest
+```
+
+## Run demo
 ```bash
 python main.py
 ```

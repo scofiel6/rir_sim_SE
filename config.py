@@ -24,3 +24,14 @@ class RIRSimSEConfig:
     # If pulse_recording is a directory, use at most this many files for fitting.
     # This is the highest-impact speed knob for large recording folders.
     max_fit_files: Optional[int] = 12
+    # Array settings for multi-channel consistent simulation.
+    mic_array_type: str = "linear"  # linear or circular
+    mic_num: int = 4
+    mic_spacing: float = 0.04
+    mic_radius: float = 0.04
+    mic_position_jitter_m: float = 0.001
+    # Device mismatch model.
+    enable_channel_mismatch: bool = True
+    channel_gain_db_std: float = 0.8
+    channel_delay_us_std: float = 20.0
+    channel_noise_dbfs_range: Tuple[float, float] = (-65.0, -50.0)

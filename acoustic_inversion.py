@@ -1,22 +1,38 @@
-﻿from pathlib import Path
-import sys
-
 from config import RIRSimSEConfig
-from imrir_adapter import call_sample_room_params, call_simulate_rir
+from imrir_adapter import base, call_sample_room_params, call_simulate_rir
 
-_ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+import numpy as np
 
-from sound_field_sim.rirGen_baseSE import BaseSERIRGenerator, _room_range_from_hint
+BaseSERIRGenerator = base.BaseSERIRGenerator
+_room_range_from_hint = base._room_range_from_hint
 
 
-def _build_single_mic_info():
+def _build_mic_info(cfg: RIRSimSEConfig):
+    arr = str(cfg.mic_array_type).lower().strip()
+    n = int(max(1, cfg.mic_num))
+    if arr == "circular":
+        return {
+            "device_id": f"circular_{n}ch",
+            "device_height": 1.2,
+            "array_type": "circular",
+            "mic_num": n,
+            "mic_radius": float(max(0.01, cfg.mic_radius)),
+        }
+
+    # Linear array in x-axis using explicit mic positions.
+    spacing = float(max(0.005, cfg.mic_spacing))
+    pos = np.arange(n, dtype=np.float64) * spacing
+    pos = pos - float(np.mean(pos))
+    jitter = float(max(0.0, cfg.mic_position_jitter_m))
+    if jitter > 0.0:
+        rng = np.random.default_rng(int(cfg.seed) + 11)
+        pos = pos + rng.normal(0.0, jitter, size=pos.shape[0])
+    pos = np.sort(pos)
     return {
-        "device_id": "single_mic_api",
+        "device_id": f"linear_{n}ch",
         "device_height": 1.2,
         "array_type": "linear",
-        "mic_pos": [0.0],
+        "mic_pos": pos.tolist(),
     }
 
 
@@ -37,7 +53,7 @@ def create_generator(cfg: RIRSimSEConfig):
 
     gen = BaseSERIRGenerator(
         fs=cfg.fs,
-        mic_info=_build_single_mic_info(),
+        mic_info=_build_mic_info(cfg),
         custom_room_range=custom_room_range,
         generic_room_range=generic_room_range,
         custom_rt60_range=(0.2, 1.2),

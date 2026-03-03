@@ -1,0 +1,19 @@
+{
+  "generated_at_utc": "2026-03-03T04:04:22.911465+00:00",
+  "repo_git_head": null,
+  "engine_dir": "engine/sound_field_sim",
+  "files": [
+    {
+      "path": "engine/sound_field_sim/__init__.py",
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "path": "engine/sound_field_sim/im_rir_v2.py",
+      "sha256": "53ad896648b0071b4be86ed91bb475fc81ee68d4d546a0cc97aa69705aae51a8"
+    },
+    {
+      "path": "engine/sound_field_sim/rirGen_baseSE.py",
+      "sha256": "4a629b4888ddffd94c6794631e53df866839a8fdd25d66997ca73297cc076239"
+    }
+  ]
+}

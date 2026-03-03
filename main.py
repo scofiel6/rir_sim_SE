@@ -27,5 +27,6 @@ if __name__ == "__main__":
     print("dry:", out["dry_path"])
     print("wet:", out["wet_path"])
     print("ref:", out["ref_path"])
+    print("n_channels:", out["n_channels"])
     print("drr/c50 strategy:", out["fit"].get("drr_c50_strategy"))
     print("rt60 median:", out["fit"].get("rt60_median"))
