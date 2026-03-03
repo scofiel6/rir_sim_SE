@@ -36,6 +36,98 @@ def _build_mic_info(cfg: RIRSimSEConfig):
     }
 
 
+def _clip_range(rng, lo, hi, min_width):
+    a, b = float(rng[0]), float(rng[1])
+    if b < a:
+        a, b = b, a
+    lo = float(lo)
+    hi = float(hi)
+    mw = float(max(0.0, min_width))
+
+    a = float(np.clip(a, lo, hi))
+    b = float(np.clip(b, lo, hi))
+    if b < a:
+        a, b = b, a
+
+    if (b - a) < mw:
+        c = 0.5 * (a + b)
+        h = 0.5 * mw
+        a = max(lo, c - h)
+        b = min(hi, c + h)
+        if (b - a) < mw:
+            if a <= lo + 1e-9:
+                b = min(hi, a + mw)
+            elif b >= hi - 1e-9:
+                a = max(lo, b - mw)
+    return (float(a), float(b))
+
+
+def _profile_source_dist_range(cfg: RIRSimSEConfig, profile_name: str):
+    lx, ly, lz = [float(v) for v in cfg.room_size_hint]
+    diag = float(np.sqrt(lx * lx + ly * ly + lz * lz))
+    min_d = 0.6
+    if profile_name == "smallroom_conservative":
+        max_d = min(1.8, 0.35 * diag)
+    else:
+        max_d = min(2.8, 0.42 * diag)
+    max_d = max(min_d + 0.2, float(max_d))
+    return (float(min_d), float(max_d))
+
+
+def _apply_generation_profile(gen, fit, cfg: RIRSimSEConfig):
+    """
+    Apply profile-level clamps so generated RIRs stay close to measured-room realism.
+    This avoids over-reverberant tails when inversion has noisy estimates.
+    """
+    profile = str(getattr(cfg, "generation_profile", "fit_aligned")).strip().lower()
+    if profile not in ("fit_aligned", "smallroom_conservative", "legacy"):
+        raise ValueError(f"Unsupported generation_profile: {cfg.generation_profile!r}")
+
+    if profile == "legacy":
+        return gen
+
+    if profile == "smallroom_conservative":
+        rt_clip = (0.14, 0.65)
+        drr_clip = (2.0, 12.0)
+        c50_clip = (4.0, 18.0)
+        rt_min_w = 0.05
+        drr_min_w = 1.5
+        c50_min_w = 1.5
+        band_jitter = 1.0 / 12.0
+    else:
+        # fit_aligned
+        rt_clip = (0.14, 0.90)
+        drr_clip = (-1.0, 12.0)
+        c50_clip = (1.0, 18.0)
+        rt_min_w = 0.06
+        drr_min_w = 1.5
+        c50_min_w = 1.5
+        band_jitter = 1.0 / 10.0
+
+    rt_rng = _clip_range(gen.custom_rt60_range, rt_clip[0], rt_clip[1], min_width=rt_min_w)
+    drr_rng = _clip_range(gen.drr_range_db, drr_clip[0], drr_clip[1], min_width=drr_min_w)
+    c50_rng = _clip_range(gen.c50_range_db, c50_clip[0], c50_clip[1], min_width=c50_min_w)
+    src_rng = _profile_source_dist_range(cfg, profile_name=profile)
+
+    gen.custom_rt60_range = rt_rng
+    gen.drr_range_db = drr_rng
+    gen.c50_range_db = c50_rng
+    gen.source_dist_range = src_rng
+    gen.band_rt60_jitter_oct = float(max(0.0, band_jitter))
+
+    # Keep this trace in fit metadata for reproducibility and A/B auditing.
+    if isinstance(fit, dict):
+        fit["generation_profile"] = profile
+        fit["applied_ranges"] = {
+            "custom_rt60_range": [float(rt_rng[0]), float(rt_rng[1])],
+            "drr_range_db": [float(drr_rng[0]), float(drr_rng[1])],
+            "c50_range_db": [float(c50_rng[0]), float(c50_rng[1])],
+            "source_dist_range_m": [float(src_rng[0]), float(src_rng[1])],
+            "band_rt60_jitter_oct": float(gen.band_rt60_jitter_oct),
+        }
+    return gen
+
+
 def create_generator(cfg: RIRSimSEConfig):
     # Ensure im_rir_v2 adapter is loaded and callable.
     if (not callable(call_sample_room_params)) or (not callable(call_simulate_rir)):
@@ -118,7 +210,8 @@ def apply_fit_to_generator(gen, fit):
 
 def create_generator_from_fit(cfg: RIRSimSEConfig, fit):
     gen = create_generator(cfg)
-    return apply_fit_to_generator(gen, fit)
+    gen = apply_fit_to_generator(gen, fit)
+    return _apply_generation_profile(gen, fit, cfg)
 
 
 def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
@@ -136,4 +229,5 @@ def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
         fit_seed=cfg.seed,
         update_generator=True,
     )
+    gen = _apply_generation_profile(gen, fit, cfg)
     return gen, fit

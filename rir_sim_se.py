@@ -101,6 +101,12 @@ def _fit_cfg_signature(cfg: RIRSimSEConfig):
     return sig
 
 
+def _state_cfg_signature(cfg: RIRSimSEConfig):
+    sig = _fit_cfg_signature(cfg).copy()
+    sig["generation_profile"] = str(getattr(cfg, "generation_profile", "fit_aligned"))
+    return sig
+
+
 def _fit_cache_path(cfg: RIRSimSEConfig):
     if cfg.fit_cache_path:
         return Path(cfg.fit_cache_path)
@@ -128,6 +134,22 @@ def _as_2d_ch_first(x):
     if arr.ndim == 1:
         return arr.reshape(1, -1)
     return arr
+
+
+def _resolve_rir_seconds(cfg: RIRSimSEConfig, fit):
+    base = float(max(0.4, cfg.rir_seconds))
+    if not bool(getattr(cfg, "adaptive_rir_seconds", True)):
+        return base
+    rt = None
+    if isinstance(fit, dict):
+        v = fit.get("rt60_median")
+        if v is not None and np.isfinite(float(v)):
+            rt = float(v)
+    if rt is None:
+        return base
+    sec = float(cfg.adaptive_rir_seconds_scale) * rt + float(cfg.adaptive_rir_seconds_bias)
+    sec = float(np.clip(sec, float(cfg.adaptive_rir_seconds_min), float(cfg.adaptive_rir_seconds_max)))
+    return float(max(0.4, sec))
 
 
 def _direct_index_from_rir(r, fs, search_ms=120.0):
@@ -391,8 +413,9 @@ def prepare_rir_sim_se_state(cfg: RIRSimSEConfig, pulse_recording):
     """
     fit_items = _resolve_fit_recordings(pulse_recording, cfg.max_fit_files, cfg.seed)
     rec_fp = _recordings_fingerprint(fit_items)
-    cfg_sig = _fit_cfg_signature(cfg)
-    mem_key = json.dumps({"rec_fp": rec_fp, "cfg_sig": cfg_sig}, sort_keys=True, ensure_ascii=False)
+    cfg_sig_fit = _fit_cfg_signature(cfg)
+    cfg_sig_state = _state_cfg_signature(cfg)
+    mem_key = json.dumps({"rec_fp": rec_fp, "cfg_sig": cfg_sig_state}, sort_keys=True, ensure_ascii=False)
 
     if (not cfg.fit_cache_force_refit) and (mem_key in _STATE_MEM_CACHE):
         return _STATE_MEM_CACHE[mem_key]
@@ -406,7 +429,7 @@ def prepare_rir_sim_se_state(cfg: RIRSimSEConfig, pulse_recording):
         payload = _load_fit_cache(fit_cache_path)
         if isinstance(payload, dict):
             ok_fp = payload.get("recordings_fingerprint") == rec_fp
-            ok_cfg = payload.get("cfg_signature") == cfg_sig
+            ok_cfg = payload.get("cfg_signature") == cfg_sig_fit
             fit_cached = payload.get("fit")
             if ok_fp and ok_cfg and isinstance(fit_cached, dict):
                 fit = fit_cached
@@ -419,7 +442,7 @@ def prepare_rir_sim_se_state(cfg: RIRSimSEConfig, pulse_recording):
             payload = {
                 "version": 1,
                 "recordings_fingerprint": rec_fp,
-                "cfg_signature": cfg_sig,
+                "cfg_signature": cfg_sig_fit,
                 "fit": fit,
             }
             _save_fit_cache(fit_cache_path, payload)
@@ -429,7 +452,8 @@ def prepare_rir_sim_se_state(cfg: RIRSimSEConfig, pulse_recording):
         "fit": fit,
         "fit_items": fit_items if isinstance(fit_items, list) else [str(fit_items)],
         "recordings_fingerprint": rec_fp,
-        "cfg_signature": cfg_sig,
+        "cfg_signature_fit": cfg_sig_fit,
+        "cfg_signature_state": cfg_sig_state,
         "fit_cache_path": str(fit_cache_path),
         "fit_source": fit_source,
     }
@@ -464,12 +488,13 @@ def run_rir_sim_se(
     gen = state["gen"]
     fit = state["fit"]
     fit_items = state["fit_items"]
+    rir_seconds_used = _resolve_rir_seconds(cfg, fit)
 
     rirs, rirs_ref, meta = generate_single_rir(
         gen,
         seed=cfg.seed + 1,
         use_drr_c50=cfg.use_drr_c50,
-        rir_seconds=cfg.rir_seconds,
+        rir_seconds=rir_seconds_used,
         ref_early_ms=cfg.ref_early_ms,
         ref_late_tail_db=cfg.ref_late_tail_db,
     )
@@ -592,7 +617,9 @@ def run_rir_sim_se(
         "dry_source": dry_id,
         "n_channels": int(rirs.shape[0]),
         "use_drr_c50": bool(cfg.use_drr_c50),
-        "rir_seconds": float(cfg.rir_seconds),
+        "rir_seconds": float(rir_seconds_used),
+        "rir_seconds_cfg": float(cfg.rir_seconds),
+        "generation_profile": str(getattr(cfg, "generation_profile", "fit_aligned")),
         "ref_early_ms": float(cfg.ref_early_ms),
         "ref_late_tail_db": float(cfg.ref_late_tail_db),
         "ref1_build_trace": ref1_build_trace,

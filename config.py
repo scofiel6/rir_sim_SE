@@ -20,6 +20,17 @@ class RIRSimSEConfig:
     return_audio_arrays: bool = False
     # RIR length cap (seconds). Smaller values speed up convolution.
     rir_seconds: float = 2.0
+    # Generation profile:
+    # - "fit_aligned": auto align to inversion result with reasonable physical clamps.
+    # - "smallroom_conservative": tighter ranges to avoid over-reverberant samples.
+    # - "legacy": keep old wide ranges.
+    generation_profile: str = "fit_aligned"
+    # If True, derive effective RIR truncation length from fitted RT60.
+    adaptive_rir_seconds: bool = True
+    adaptive_rir_seconds_min: float = 1.0
+    adaptive_rir_seconds_max: float = 1.8
+    adaptive_rir_seconds_scale: float = 1.1
+    adaptive_rir_seconds_bias: float = 0.25
     # Keep direct arrival + early reflections within this window for ref target.
     ref_early_ms: float = 20.0
     # Keep a little late tail in ref (dB relative scale at early/late boundary).

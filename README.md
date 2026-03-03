@@ -28,6 +28,16 @@ state = prepare_rir_sim_se_state(cfg, pulse_recording=pulse_recording)
 out = run_rir_sim_se(cfg, state=state, dry_wav=dry_wav)
 ```
 
+Profile A/B without re-fitting:
+```python
+state_a = prepare_rir_sim_se_state(cfg_a, pulse_recording=pulse_recording)
+out_a = run_rir_sim_se(cfg_a, state=state_a, dry_wav=dry_wav)
+
+state_b = dict(state_a)
+state_b["gen"] = create_generator_from_fit(cfg_b, state_a["fit"])
+out_b = run_rir_sim_se(cfg_b, state=state_b, dry_wav=dry_wav)
+```
+
 Training-time in-memory fast path (no per-step disk I/O):
 ```python
 cfg.save_outputs = False
@@ -54,6 +64,8 @@ Output keys:
 - `ref2_build_trace`
 - `ref2_path`
 - `rir_ref2_path`
+- `generation_profile`
+- `rir_seconds` / `rir_seconds_cfg`
 
 ## Reproducibility
 - Engine vendoring + hash manifest: `reproducibility/engine_manifest.json`
@@ -67,6 +79,13 @@ Output keys:
 - Online speed controls in `RIRSimSEConfig`:
   - `save_outputs`
   - `return_audio_arrays`
+- Auto-alignment controls in `RIRSimSEConfig`:
+  - `generation_profile`: `fit_aligned` / `smallroom_conservative` / `legacy`
+  - `adaptive_rir_seconds`
+  - `adaptive_rir_seconds_min` / `adaptive_rir_seconds_max`
+  - `adaptive_rir_seconds_scale` / `adaptive_rir_seconds_bias`
+
+`fit_aligned` is designed for cross-room usage: you only replace recording data, and generation ranges are auto-clamped from inversion results.
 
 ## Ref targets (SE supervision)
 - `ref` (ref1):
