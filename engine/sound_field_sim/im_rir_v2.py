@@ -9,7 +9,7 @@ C = 343
 
 # Low-frequency modal augmentation
 
-# 浣庨妯℃€佺殑鍙犲姞琛屼负
+# Low-frequency mode synthesis for late tail shaping.
 
 def add_low_freq_modes(
     tail,
@@ -25,15 +25,16 @@ def add_low_freq_modes(
     return_meta=False,
 ):
     """
-    40Hz浠ヤ笅閮ㄥ垎鍒囬櫎
+    Add low-frequency modes in [fmin, fmax] to improve late-tail realism.
     room_dim: (lx, ly, lz)
-    rt60: RT60_target
+    rt60: RT60 target
     """
     lx, ly, lz = room_dim
     N = len(tail)
     t = np.arange(N) / fs
 
-    # 妯℃€佸€欓€夐鐜?    cand = []
+    # Candidate axial modal frequencies.
+    cand = []
     for L in (lx, ly, lz):
         n_max = int(np.floor(2 * fmax * L / c))
         for n in range(1, max(2, n_max + 1)):
@@ -50,28 +51,29 @@ def add_low_freq_modes(
         }
         return (tail, meta) if return_meta else tail
 
-    # 闅忔満鎶藉嚑涓ā鎬?  鍔犻鐜噅itter
+    # Sample a subset of modes and apply small frequency jitter.
     rng = np.random.default_rng(0) if rng is None else rng
 
     K = rng.integers(n_modes_range[0], n_modes_range[1] + 1)
     K = min(K, len(cand))
     fk = rng.choice(cand, size=K, replace=False)
-    fk = fk * rng.uniform(0.98, 1.02, size=K)  # 鍔?% jitter
+    fk = fk * rng.uniform(0.98, 1.02, size=K)
 
-    # 鍚堟垚闃诲凹姝ｅ鸡 modes
+    # Synthesize damped modal sinusoids.
     modes = np.zeros_like(tail, dtype=np.float64)
     mode_taus = []
     for f in fk:
         phi = rng.uniform(0, 2*np.pi)
-        # 闃诲凹甯告暟
+        # Damping time constant.
         tau = rt60 * rng.uniform(0.4, 1.2)
-        # 浣庨鏇存參
+        # Slightly slower decay for lower frequencies.
         tau *= (120.0 / max(f, 60.0))**0.2
         mode_taus.append(float(tau))
         a = np.exp(-t / max(tau, 1e-3))
         modes += a * np.sin(2*np.pi*f*t + phi)
 
-    # 妯℃€佸己搴︼細鐩稿tail 鐨勪綆棰戣兘閲?    # 涓虹畝鍗曠ǔ鍋ワ細鐢ㄥ叏娈礡MS鍋氬弬鑰冿紙涔熷彲鏀规垚 bandpass 40-200 鐨凴MS锛?    rms_tail = np.sqrt(np.mean(tail**2) + 1e-12)
+    # Use tail RMS as reference to set modal strength.
+    rms_tail = np.sqrt(np.mean(tail**2) + 1e-12)
 
     # normalize
     rms_modes = np.sqrt(np.mean(modes**2) + 1e-12)
@@ -101,7 +103,7 @@ def wall_alpha(alpha_bar, scale=0.15, rng=None):
     return np.clip(alpha_bar * rng.uniform(1-scale, 1+scale, size=alpha_bar.shape), 0.01, 0.99)
 
 def generate_velvet_noise(length, fs, density=2000, rng=None):
-    # 鑴夊啿鍣０浠ｆ浛鐧藉櫔澹板幓鐩稿共 
+    # Sparse pulse noise for low-coherence late tail synthesis.
     rng = np.random.default_rng(0) if rng is None else rng
     length = int(max(0, length))
     fs = float(fs)
@@ -118,7 +120,8 @@ def generate_velvet_noise(length, fs, density=2000, rng=None):
     return velvet
 
 def apply_highpass(sig, fs, cutoff=40):
-    # 楂橀€?    sos = butter(4, cutoff, 'hp', fs=fs, output='sos')
+    # Remove very low-frequency rumble.
+    sos = butter(4, cutoff, 'hp', fs=fs, output='sos')
     return sosfilt(sos, sig)
 
 
