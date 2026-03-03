@@ -66,7 +66,10 @@ def _apply_integer_delay(sig, shift):
 def _apply_channel_mismatch(arr, fs, cfg, seed):
     x = _as_2d_ch_first(arr)
     if (not cfg.enable_channel_mismatch) or x.shape[0] <= 1:
-        return x, {"enabled": False}
+        return x, {
+            "enabled": False,
+            "white_noise_enabled": bool(getattr(cfg, "enable_channel_white_noise", False)),
+        }
 
     rng = np.random.default_rng(int(seed) + 333)
     out = np.zeros_like(x)
@@ -75,6 +78,7 @@ def _apply_channel_mismatch(arr, fs, cfg, seed):
     noise_dbfs = []
 
     delay_std_samp = float(max(0.0, cfg.channel_delay_us_std)) * 1e-6 * float(fs)
+    white_noise_enabled = bool(getattr(cfg, "enable_channel_white_noise", False))
     n_lo, n_hi = float(min(cfg.channel_noise_dbfs_range)), float(max(cfg.channel_noise_dbfs_range))
     for ch in range(x.shape[0]):
         g_db = float(rng.normal(0.0, float(max(0.0, cfg.channel_gain_db_std))))
@@ -82,11 +86,15 @@ def _apply_channel_mismatch(arr, fs, cfg, seed):
         d = int(np.round(rng.normal(0.0, delay_std_samp)))
         x_ch = _apply_integer_delay(x[ch], d) * g
 
-        n_db = float(rng.uniform(n_lo, n_hi))
-        n_rms = float(10.0 ** (n_db / 20.0))
-        noise = rng.standard_normal(x_ch.shape[0]).astype(np.float64)
-        noise = noise / max(float(np.sqrt(np.mean(noise**2) + 1e-12)), 1e-12) * n_rms
-        out[ch] = x_ch + noise
+        if white_noise_enabled:
+            n_db = float(rng.uniform(n_lo, n_hi))
+            n_rms = float(10.0 ** (n_db / 20.0))
+            noise = rng.standard_normal(x_ch.shape[0]).astype(np.float64)
+            noise = noise / max(float(np.sqrt(np.mean(noise**2) + 1e-12)), 1e-12) * n_rms
+            out[ch] = x_ch + noise
+        else:
+            n_db = None
+            out[ch] = x_ch
 
         gains_db.append(g_db)
         delays_samp.append(int(d))
@@ -94,6 +102,7 @@ def _apply_channel_mismatch(arr, fs, cfg, seed):
 
     info = {
         "enabled": True,
+        "white_noise_enabled": bool(white_noise_enabled),
         "gain_db": gains_db,
         "delay_samples": delays_samp,
         "noise_dbfs": noise_dbfs,
@@ -173,6 +182,7 @@ def run_rir_sim_se(cfg: RIRSimSEConfig, pulse_recording, dry_wav=None):
         "ref_path": str(ref_path),
         "mismatch_wet": mm_wet,
         "mismatch_ref": mm_ref,
+        "channel_white_noise_enabled": bool(cfg.enable_channel_white_noise),
         "fit": fit,
         "meta": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in meta.items()},
         "engine_manifest": _load_engine_manifest(),

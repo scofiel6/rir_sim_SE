@@ -31,7 +31,10 @@ class RIRSimSEConfig:
     mic_radius: float = 0.04
     mic_position_jitter_m: float = 0.001
     # Device mismatch model.
-    enable_channel_mismatch: bool = True
+    # Set False for pure "RIR + convolution + ref" generation with no device perturbation.
+    enable_channel_mismatch: bool = False
+    # Extra additive white-noise switch (independent from RIR reverberation synthesis).
+    enable_channel_white_noise: bool = False
     channel_gain_db_std: float = 0.8
     channel_delay_us_std: float = 20.0
     channel_noise_dbfs_range: Tuple[float, float] = (-65.0, -50.0)

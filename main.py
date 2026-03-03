@@ -13,6 +13,8 @@ if __name__ == "__main__":
         ref_early_ms=20.0,
         ref_late_tail_db=-26.0,
         max_fit_files=12,
+        enable_channel_mismatch=False,
+        enable_channel_white_noise=False,
         out_dir="./_out_rir_sim_se",
     )
 

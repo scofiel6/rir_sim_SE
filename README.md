@@ -44,6 +44,11 @@ Output keys:
 - `RIRSimSEConfig.mic_num`: number of channels
 - `RIRSimSEConfig.mic_spacing` / `mic_radius`: array geometry
 - `RIRSimSEConfig.enable_channel_mismatch`: enable per-channel gain/delay/noise perturbation
+- `RIRSimSEConfig.enable_channel_white_noise`: additive white-noise switch in post mismatch stage
+
+For pure measured-room inversion -> RIR -> convolution (no additive white noise), use:
+- `enable_channel_mismatch=False`
+- `enable_channel_white_noise=False`
 
 ## Quality evaluation
 - Compare real/sim RIR distributions:
