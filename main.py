@@ -13,7 +13,7 @@ if __name__ == "__main__":
         ref_early_ms=20.0,
         ref_late_tail_db=-26.0,
         max_fit_files=12,
-        ref_target_mode="dry_distance",
+        ref2_enabled=True,
         enable_channel_mismatch=False,
         enable_channel_white_noise=False,
         out_dir="./_out_rir_sim_se",
@@ -32,10 +32,11 @@ if __name__ == "__main__":
     print("dry:", out["dry_path"])
     print("wet:", out["wet_path"])
     print("ref:", out["ref_path"])
+    print("ref2:", out.get("ref2_path"))
     print("n_channels:", out["n_channels"])
     print("fit_source:", out.get("fit_source"))
     print("fit_cache_path:", out.get("fit_cache_path"))
-    print("ref_target_mode:", out.get("ref_target_mode"))
-    print("ref_build_trace:", out.get("ref_build_trace"))
+    print("ref1_build_trace:", out.get("ref1_build_trace"))
+    print("ref2_build_trace:", out.get("ref2_build_trace"))
     print("drr/c50 strategy:", out["fit"].get("drr_c50_strategy"))
     print("rt60 median:", out["fit"].get("rt60_median"))

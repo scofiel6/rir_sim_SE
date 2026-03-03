@@ -163,7 +163,7 @@ def _select_sparse_peak_indices(x_abs, n_taps, min_gap):
     return sorted(chosen)
 
 
-def _build_dry_distance_ref_rir(
+def _build_ref2_distance_rir(
     rirs,
     fs,
     src_dist,
@@ -176,7 +176,7 @@ def _build_dry_distance_ref_rir(
     min_tap_ms,
 ):
     """
-    Build a dry-like multi-channel reference RIR:
+    Build ref2 multi-channel reference RIR:
     - no frequency-dependent air absorption transfer from simulated RIR,
     - keep direct + sparse early timing structure for spatial realism,
     - apply broadband distance gain to keep distance cue.
@@ -217,7 +217,7 @@ def _build_dry_distance_ref_rir(
         out[ch] = h
 
     trace = {
-        "mode": "dry_distance",
+        "mode": "ref2_distance",
         "src_dist_m": float(dist),
         "distance_gain": float(gain_dist),
         "distance_ref_m": float(distance_ref_m),
@@ -465,31 +465,39 @@ def run_rir_sim_se(
 
     wet = _as_2d_ch_first(convolve_dry_rir(dry, rirs))
 
-    ref_mode = str(getattr(cfg, "ref_target_mode", "early_rir")).strip().lower()
-    if ref_mode == "dry_distance":
-        ref_rir_to_use, ref_build_trace = _build_dry_distance_ref_rir(
+    # ref1: keep previous behavior.
+    # It comes from early-dominant RIR (includes band/air behavior from full RIR),
+    # then late reverberation is suppressed by the ref RIR builder.
+    ref1_rir = rirs_ref
+    ref1 = _as_2d_ch_first(convolve_dry_rir(dry, ref1_rir))
+    ref1_build_trace = {
+        "mode": "early_rir",
+        "early_window_ms": float(cfg.ref_early_ms),
+        "late_tail_db": float(cfg.ref_late_tail_db),
+    }
+
+    # ref2: broadband distance attenuation with sparse early structure.
+    # This avoids heavy high-frequency attenuation while keeping distance cue.
+    ref2_enabled = bool(getattr(cfg, "ref2_enabled", True))
+    ref2 = None
+    ref2_rir = None
+    ref2_build_trace = {"enabled": False}
+    if ref2_enabled:
+        ref2_early_ms = cfg.ref_early_ms if cfg.ref2_early_ms is None else float(cfg.ref2_early_ms)
+        ref2_rir, ref2_build_trace = _build_ref2_distance_rir(
             rirs=rirs,
             fs=int(cfg.fs),
             src_dist=meta.get("src_dist"),
-            ref_early_ms=float(cfg.ref_early_ms),
-            distance_ref_m=float(cfg.ref_distance_ref_m),
-            distance_power=float(cfg.ref_distance_power),
-            distance_gain_min=float(cfg.ref_distance_gain_min),
-            distance_gain_max=float(cfg.ref_distance_gain_max),
-            early_taps=int(cfg.ref_distance_early_taps),
-            min_tap_ms=float(cfg.ref_distance_min_tap_ms),
+            ref_early_ms=float(ref2_early_ms),
+            distance_ref_m=float(cfg.ref2_distance_ref_m),
+            distance_power=float(cfg.ref2_distance_power),
+            distance_gain_min=float(cfg.ref2_distance_gain_min),
+            distance_gain_max=float(cfg.ref2_distance_gain_max),
+            early_taps=int(cfg.ref2_early_taps),
+            min_tap_ms=float(cfg.ref2_min_tap_ms),
         )
-    elif ref_mode == "early_rir":
-        ref_rir_to_use = rirs_ref
-        ref_build_trace = {
-            "mode": "early_rir",
-            "early_window_ms": float(cfg.ref_early_ms),
-            "late_tail_db": float(cfg.ref_late_tail_db),
-        }
-    else:
-        raise ValueError(f"Unsupported ref_target_mode: {cfg.ref_target_mode!r}")
-
-    ref = _as_2d_ch_first(convolve_dry_rir(dry, ref_rir_to_use))
+        ref2 = _as_2d_ch_first(convolve_dry_rir(dry, ref2_rir))
+        ref2_build_trace["enabled"] = True
 
     mismatch = _sample_channel_mismatch_params(
         cfg=cfg,
@@ -498,34 +506,47 @@ def run_rir_sim_se(
         seed=int(cfg.seed),
     )
     wet = _apply_channel_mismatch(wet, cfg.fs, mismatch, noise_seed=cfg.seed + 101)
-    ref = _apply_channel_mismatch(ref, cfg.fs, mismatch, noise_seed=cfg.seed + 202)
+    ref1 = _apply_channel_mismatch(ref1, cfg.fs, mismatch, noise_seed=cfg.seed + 202)
+    if ref2 is not None:
+        ref2 = _apply_channel_mismatch(ref2, cfg.fs, mismatch, noise_seed=cfg.seed + 303)
 
     peak = max(
         float(np.max(np.abs(wet))) if wet.size > 0 else 0.0,
-        float(np.max(np.abs(ref))) if ref.size > 0 else 0.0,
+        float(np.max(np.abs(ref1))) if ref1.size > 0 else 0.0,
+        float(np.max(np.abs(ref2))) if (ref2 is not None and ref2.size > 0) else 0.0,
     )
     if peak > 0.99:
         gain = 0.99 / peak
         wet = wet * gain
-        ref = ref * gain
+        ref1 = ref1 * gain
+        if ref2 is not None:
+            ref2 = ref2 * gain
 
     if save_outputs:
         rir_path = out_dir / "rir.wav"
         rir_ref_path = out_dir / "rir_ref.wav"
+        rir_ref2_path = out_dir / "rir_ref2.wav" if ref2_rir is not None else None
         dry_path = out_dir / "dry.wav"
         wet_path = out_dir / "wet.wav"
         ref_path = out_dir / "ref.wav"
+        ref2_path = out_dir / "ref2.wav" if ref2 is not None else None
         save_wav(rir_path, rirs, cfg.fs)
-        save_wav(rir_ref_path, ref_rir_to_use, cfg.fs)
+        save_wav(rir_ref_path, ref1_rir, cfg.fs)
+        if ref2_rir is not None and rir_ref2_path is not None:
+            save_wav(rir_ref2_path, ref2_rir, cfg.fs)
         save_wav(dry_path, dry, cfg.fs)
         save_wav(wet_path, wet, cfg.fs)
-        save_wav(ref_path, ref, cfg.fs)
+        save_wav(ref_path, ref1, cfg.fs)
+        if ref2 is not None and ref2_path is not None:
+            save_wav(ref2_path, ref2, cfg.fs)
     else:
         rir_path = None
         rir_ref_path = None
+        rir_ref2_path = None
         dry_path = None
         wet_path = None
         ref_path = None
+        ref2_path = None
 
     summary = {
         "fs": int(cfg.fs),
@@ -541,13 +562,17 @@ def run_rir_sim_se(
         "rir_seconds": float(cfg.rir_seconds),
         "ref_early_ms": float(cfg.ref_early_ms),
         "ref_late_tail_db": float(cfg.ref_late_tail_db),
-        "ref_target_mode": ref_mode,
-        "ref_build_trace": ref_build_trace,
+        "ref1_build_trace": ref1_build_trace,
+        "ref2_enabled": ref2_enabled,
+        "ref2_early_ms": float(cfg.ref_early_ms if cfg.ref2_early_ms is None else cfg.ref2_early_ms),
+        "ref2_build_trace": ref2_build_trace,
         "rir_path": None if rir_path is None else str(rir_path),
         "rir_ref_path": None if rir_ref_path is None else str(rir_ref_path),
+        "rir_ref2_path": None if rir_ref2_path is None else str(rir_ref2_path),
         "dry_path": None if dry_path is None else str(dry_path),
         "wet_path": None if wet_path is None else str(wet_path),
         "ref_path": None if ref_path is None else str(ref_path),
+        "ref2_path": None if ref2_path is None else str(ref2_path),
         "mismatch": mismatch,
         "channel_white_noise_enabled": bool(cfg.enable_channel_white_noise),
         "fit": fit,
@@ -566,8 +591,10 @@ def run_rir_sim_se(
     if return_audio_arrays:
         summary["dry"] = dry
         summary["wet"] = wet
-        summary["ref"] = ref
+        summary["ref"] = ref1
+        summary["ref2"] = ref2
         summary["rir"] = rirs
-        summary["rir_ref"] = ref_rir_to_use
+        summary["rir_ref"] = ref1_rir
+        summary["rir_ref2"] = ref2_rir
 
     return summary

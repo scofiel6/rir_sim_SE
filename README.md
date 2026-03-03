@@ -50,8 +50,10 @@ Output keys:
 - `fit_source`
 - `fit_cache_path`
 - `recordings_fingerprint`
-- `ref_target_mode`
-- `ref_build_trace`
+- `ref1_build_trace`
+- `ref2_build_trace`
+- `ref2_path`
+- `rir_ref2_path`
 
 ## Reproducibility
 - Engine vendoring + hash manifest: `reproducibility/engine_manifest.json`
@@ -61,23 +63,25 @@ Output keys:
 - Fit cache controls in `RIRSimSEConfig`:
   - `enable_fit_cache`
   - `fit_cache_path`
-- `fit_cache_force_refit`
+  - `fit_cache_force_refit`
 - Online speed controls in `RIRSimSEConfig`:
   - `save_outputs`
   - `return_audio_arrays`
 
-## Ref target modes (SE supervision)
-- `ref_target_mode="early_rir"`:
-  - reference from early-dominant simulated RIR (contains engine spectral effects).
-- `ref_target_mode="dry_distance"`:
-  - reference is built from dry signal with broadband distance attenuation and sparse early taps.
-  - avoids inheriting air-absorption spectral tilt in the target, while keeping distance cue.
+## Ref targets (SE supervision)
+- `ref` (ref1):
+  - early-dominant RIR reference (keeps frequency-dependent air/band behavior, suppresses late reverberation).
+- `ref2`:
+  - broadband distance-attenuated reference with sparse early taps.
+  - suppresses late reverberation while avoiding over-attenuated high-frequency target.
   - key knobs:
-    - `ref_distance_ref_m`
-    - `ref_distance_power`
-    - `ref_distance_gain_min` / `ref_distance_gain_max`
-    - `ref_distance_early_taps`
-    - `ref_distance_min_tap_ms`
+    - `ref2_enabled`
+    - `ref2_early_ms`
+    - `ref2_distance_ref_m`
+    - `ref2_distance_power`
+    - `ref2_distance_gain_min` / `ref2_distance_gain_max`
+    - `ref2_early_taps`
+    - `ref2_min_tap_ms`
 
 ## Array and device realism
 - `RIRSimSEConfig.mic_array_type`: `linear` or `circular`
