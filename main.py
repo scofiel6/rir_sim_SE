@@ -1,54 +1,60 @@
-import copy
-from dataclasses import replace
+from pathlib import Path
 
-from acoustic_inversion import create_generator_from_fit
+from audio_io import convolve_dry_rir, read_audio_mono, resample_mono, save_wav
 from config import RIRSimSEConfig
-from rir_sim_se import prepare_rir_sim_se_state, run_rir_sim_se
+from rir_sim_se import generate_rir_from_state, invert_acoustic_state
 
 
 if __name__ == "__main__":
-    cfg_a = RIRSimSEConfig(
+    cfg = RIRSimSEConfig(
         fs=32000,
         seed=2026,
         use_drr_c50=True,
-        room_size_hint=(3.6, 3.8, 2.7),
-        room_jitter_ratio=0.04,
-        rir_seconds=2.0,
-        generation_profile="fit_aligned",
-        ref_early_ms=20.0,
-        ref_late_tail_db=-26.0,
-        max_fit_files=12,
-        ref2_enabled=True,
-        enable_channel_mismatch=False,
-        enable_channel_white_noise=False,
-        out_dir="./_out_rir_sim_se/A_fit_aligned",
-    )
-    cfg_b = replace(
-        cfg_a,
-        generation_profile="smallroom_conservative",
-        out_dir="./_out_rir_sim_se/B_smallroom_conservative",
+        # Keep shorter tail for small-room speech tasks.
+        rir_seconds=1.4,
+        # All your inversion recordings are IR captures.
+        inversion_drr_c50_mode="from_recording",
+        inversion_rt60_min=0.12,
+        inversion_rt60_max=0.70,
+        out_dir="./_out_rir_sim_se",
     )
 
     pulse_recording = "/home/xukj/dataset_comsolTest/room_test"
     dry_wav = "/home/xukj/dataset_rir/sound_field_sim/test.wav"
 
-    # Fit once (A), then re-profile same fit for B without re-inversion.
-    state_a = prepare_rir_sim_se_state(cfg_a, pulse_recording=pulse_recording)
-    out_a = run_rir_sim_se(cfg_a, state=state_a, dry_wav=dry_wav)
+    out_dir = Path(cfg.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    state_b = dict(state_a)
-    state_b["fit"] = copy.deepcopy(state_a["fit"])
-    state_b["gen"] = create_generator_from_fit(cfg_b, state_b["fit"])
-    state_b["fit_source"] = f"{state_a.get('fit_source', 'unknown')}+reprofile"
-    out_b = run_rir_sim_se(cfg_b, state=state_b, dry_wav=dry_wav)
+    # Step-1: inversion state from measured impulse recordings.
+    state = invert_acoustic_state(cfg, pulse_recording=pulse_recording)
 
-    print("=== rir_sim_SE A/B done ===")
-    print("[A] profile:", out_a.get("generation_profile"))
-    print("[A] rir_seconds used/cfg:", out_a.get("rir_seconds"), out_a.get("rir_seconds_cfg"))
-    print("[A] wet/ref/ref2:", out_a.get("wet_path"), out_a.get("ref_path"), out_a.get("ref2_path"))
-    print("[A] applied ranges:", out_a["fit"].get("applied_ranges"))
+    # Step-2: generate RIRs only (no convolution inside generator module).
+    out = generate_rir_from_state(cfg, state=state)
+    rir = out["rir"]
+    ref1 = out["ref1"]
+    ref2 = out["ref2"]
 
-    print("[B] profile:", out_b.get("generation_profile"))
-    print("[B] rir_seconds used/cfg:", out_b.get("rir_seconds"), out_b.get("rir_seconds_cfg"))
-    print("[B] wet/ref/ref2:", out_b.get("wet_path"), out_b.get("ref_path"), out_b.get("ref2_path"))
-    print("[B] applied ranges:", out_b["fit"].get("applied_ranges"))
+    save_wav(out_dir / "rir.wav", rir, cfg.fs)
+    save_wav(out_dir / "rir_ref1.wav", ref1, cfg.fs)
+    save_wav(out_dir / "rir_ref2.wav", ref2, cfg.fs)
+
+    # Convolution is handled in main (outside RIR generation module).
+    dry, dry_fs = read_audio_mono(dry_wav)
+    dry = resample_mono(dry, dry_fs, cfg.fs, allow_upsample=False)
+    wet = convolve_dry_rir(dry, rir)
+    wet_ref1 = convolve_dry_rir(dry, ref1)
+    wet_ref2 = convolve_dry_rir(dry, ref2)
+
+    save_wav(out_dir / "dry.wav", dry, cfg.fs)
+    save_wav(out_dir / "wet.wav", wet, cfg.fs)
+    save_wav(out_dir / "wet_ref1.wav", wet_ref1, cfg.fs)
+    save_wav(out_dir / "wet_ref2.wav", wet_ref2, cfg.fs)
+
+    fit = out.get("fit", {})
+    print("=== rir_sim_SE done ===")
+    print("rt60:", fit.get("rt60_median"), "range:", fit.get("rt60_p20"), fit.get("rt60_p80"))
+    print("drr range:", fit.get("drr_db_p20_p80"), "c50 range:", fit.get("c50_db_p20_p80"))
+    print("rir:", out_dir / "rir.wav")
+    print("ref1:", out_dir / "rir_ref1.wav")
+    print("ref2:", out_dir / "rir_ref2.wav")
+    print("wet:", out_dir / "wet.wav")

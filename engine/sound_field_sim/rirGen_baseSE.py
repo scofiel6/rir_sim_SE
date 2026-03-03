@@ -574,15 +574,21 @@ class BaseSERIRGenerator:
         e = min(x.size, s + tail_n)
         return x[s:e], p
 
-    @staticmethod
-    def _is_impulse_like(x):
+    def _is_impulse_like(self, x, fs_hz=None):
         x = np.asarray(x, dtype=np.float64).reshape(-1)
         if x.size < 64:
             return False
         peak = float(np.max(np.abs(x)))
         rms = float(np.sqrt(np.mean(x * x) + 1e-12))
         crest_db = 20.0 * np.log10(peak / (rms + 1e-12))
-        return bool(crest_db >= 14.0)
+        fs_use = int(self.fs if fs_hz is None else fs_hz)
+        p = int(np.argmax(np.abs(x)))
+        d_n = max(1, int(round(0.003 * fs_use)))
+        late_s = min(x.size, p + max(d_n, int(round(0.05 * fs_use))))
+        e_d = float(np.sum(x[p:min(x.size, p + d_n)] ** 2) + 1e-12)
+        e_l = float(np.sum(x[late_s:] ** 2) + 1e-12)
+        dlr_db = 10.0 * np.log10(e_d / e_l)
+        return bool((crest_db >= 14.0) and (dlr_db >= 3.0))
 
     def _apply_drr_c50_target(self, rir, drr_tgt_db, c50_tgt_db):
         r = np.asarray(rir, dtype=np.float64).copy().reshape(-1)
@@ -751,7 +757,7 @@ class BaseSERIRGenerator:
             r = r * gain
         return y, c, r, gain, peak
 
-    def _estimate_rt60_schroeder(self, x, fs_hz=None):
+    def _estimate_rt60_schroeder(self, x, fs_hz=None, noise_comp=True):
         """
         Estimate RT60 from a decay segment using Schroeder integration.
 
@@ -759,11 +765,18 @@ class BaseSERIRGenerator:
         This is the classic robust approach for reverberation decay fitting.
         """
         fs_use = int(self.fs if fs_hz is None else fs_hz)
-        x = np.asarray(x, dtype=np.float64)
+        x = np.asarray(x, dtype=np.float64).reshape(-1)
         if x.size < max(64, int(0.12 * fs_use)):
             return None
         x = x - np.mean(x)
         e = x * x
+        if bool(noise_comp):
+            # Remove stationary noise floor before EDC integration; otherwise
+            # tail flattening tends to overestimate RT60 in real recordings.
+            tail_n = max(64, int(0.1 * e.size))
+            noise_p = float(np.median(e[-tail_n:]))
+            if np.isfinite(noise_p) and noise_p > 0.0:
+                e = np.maximum(e - noise_p, 0.0)
         if np.max(e) <= 1e-12:
             return None
 
@@ -772,10 +785,20 @@ class BaseSERIRGenerator:
         db = 10.0 * np.log10(np.maximum(edc, 1e-12))
         t = np.arange(db.size, dtype=np.float64) / float(fs_use)
 
-        # Prefer T30 fit window [-5, -35] dB; fallback to T20 window if too short.
-        m = (db <= -5.0) & (db >= -35.0)
-        if np.count_nonzero(m) < 20:
-            m = (db <= -5.0) & (db >= -25.0)
+        # Fit only before first crossing of lower bound to avoid noise-floor bias.
+        idx = np.arange(db.size)
+        hit_35 = np.where(db <= -35.0)[0]
+        if hit_35.size > 0:
+            lo_db = -35.0
+            end_i = int(hit_35[0])
+        else:
+            hit_25 = np.where(db <= -25.0)[0]
+            if hit_25.size == 0:
+                return None
+            lo_db = -25.0
+            end_i = int(hit_25[0])
+
+        m = (db <= -5.0) & (db >= lo_db) & (idx <= end_i)
         if np.count_nonzero(m) < 20:
             return None
         slope, _ = np.polyfit(t[m], db[m], 1)
@@ -785,6 +808,18 @@ class BaseSERIRGenerator:
         if not np.isfinite(rt60):
             return None
         return float(np.clip(rt60, 0.08, 3.0))
+
+    def _estimate_rt60_from_impulse(self, x, fs_hz=None):
+        """
+        RT60 estimate specialized for impulse-like recordings.
+        """
+        fs_use = int(self.fs if fs_hz is None else fs_hz)
+        seg, _ = self._extract_impulse_segment(x, fs_hz=fs_use, pre_ms=2.0, tail_s=1.0)
+        if seg.size < max(64, int(0.12 * fs_use)):
+            return None
+        p = int(np.argmax(np.abs(seg)))
+        decay = seg[p:]
+        return self._estimate_rt60_schroeder(decay, fs_hz=fs_use, noise_comp=True)
 
     def _estimate_rt60_from_recording(self, x, fs_hz=None):
         """
@@ -796,9 +831,15 @@ class BaseSERIRGenerator:
         we fallback to full-signal Schroeder estimate.
         """
         fs_use = int(self.fs if fs_hz is None else fs_hz)
-        x = np.asarray(x, dtype=np.float64)
+        x = np.asarray(x, dtype=np.float64).reshape(-1)
         if x.size < max(128, int(0.2 * fs_use)):
             return None
+
+        # Prefer impulse-tail estimator when signal looks like an IR capture.
+        if self._is_impulse_like(x, fs_hz=fs_use):
+            est_imp = self._estimate_rt60_from_impulse(x, fs_hz=fs_use)
+            if est_imp is not None:
+                return float(est_imp)
 
         env = np.abs(x - np.mean(x))
         ma_n = max(1, int(0.01 * fs_use))
@@ -817,15 +858,15 @@ class BaseSERIRGenerator:
 
         rt = []
         # Tail length should cover enough decay for regression.
-        tail_n = max(int(0.4 * fs_use), int(0.8 * fs_use))
+        tail_n = int(0.8 * fs_use)
         for p in peaks[-24:]:
             seg = x[p:min(len(x), p + tail_n)]
-            est = self._estimate_rt60_schroeder(seg, fs_hz=fs_use)
+            est = self._estimate_rt60_schroeder(seg, fs_hz=fs_use, noise_comp=True)
             if est is not None:
                 rt.append(float(est))
         if len(rt) > 0:
             return float(np.median(rt))
-        return self._estimate_rt60_schroeder(x, fs_hz=fs_use)
+        return self._estimate_rt60_schroeder(x, fs_hz=fs_use, noise_comp=True)
 
     def _bandpass(self, x, f1, f2, fs_hz=None):
         fs_use = int(self.fs if fs_hz is None else fs_hz)
@@ -1003,14 +1044,19 @@ class BaseSERIRGenerator:
                 continue
 
             ir_seg, _ = self._extract_impulse_segment(x, fs_hz=fs_item, pre_ms=3.0, tail_s=1.2)
-            rt = self._estimate_rt60_from_recording(ir_seg, fs_hz=fs_item)
+            impulse_like = self._is_impulse_like(ir_seg, fs_hz=fs_item)
+            if impulse_like:
+                rt = self._estimate_rt60_from_impulse(ir_seg, fs_hz=fs_item)
+                if rt is None:
+                    rt = self._estimate_rt60_from_recording(ir_seg, fs_hz=fs_item)
+            else:
+                rt = self._estimate_rt60_from_recording(ir_seg, fs_hz=fs_item)
             band_rt_partial = self._estimate_band_rt60_from_recording(
                 ir_seg,
                 band_centers=fit_band_centers,
                 fs_hz=fs_item,
             )
 
-            impulse_like = self._is_impulse_like(ir_seg)
             if drr_c50_mode == "from_recording":
                 # Force estimation from recording; require impulse-like capture.
                 if not impulse_like:
@@ -1067,8 +1113,28 @@ class BaseSERIRGenerator:
             raise RuntimeError("No valid RT60 estimates from recordings.")
 
         rt60_arr = np.asarray(rt60_vals, dtype=np.float64)
+        if rt60_arr.size >= 5:
+            # IQR filtering suppresses occasional gross over-estimates from noisy tails.
+            q1, q3 = np.percentile(rt60_arr, [25.0, 75.0])
+            iqr = max(float(q3 - q1), 1e-3)
+            lo_o = float(q1 - 1.5 * iqr)
+            hi_o = float(q3 + 1.5 * iqr)
+            keep = (rt60_arr >= lo_o) & (rt60_arr <= hi_o)
+            if int(np.count_nonzero(keep)) >= max(3, int(0.6 * rt60_arr.size)):
+                rt60_arr = rt60_arr[keep]
+
         lo = float(min(rt60_min_max))
         hi = float(max(rt60_min_max))
+        if room_size_hint is not None:
+            rs = np.asarray(room_size_hint, dtype=np.float64).reshape(3)
+            V_hint = float(max(1.0, np.prod(rs)))
+            # Volume-aware upper cap to prevent non-physical RT60 for small rooms.
+            if V_hint <= 25.0:
+                hi = min(hi, 0.60)
+            elif V_hint <= 40.0:
+                hi = min(hi, 0.75)
+            elif V_hint <= 70.0:
+                hi = min(hi, 0.95)
         rt50 = float(np.clip(np.percentile(rt60_arr, 50), lo, hi))
         rt20 = float(np.clip(np.percentile(rt60_arr, 20), lo, hi))
         rt80 = float(np.clip(np.percentile(rt60_arr, 80), lo, hi))
@@ -1158,12 +1224,14 @@ class BaseSERIRGenerator:
 
         fit = {
             "n_input": len(items),
-            "n_used_rt60": int(len(rt60_vals)),
+            "n_used_rt60": int(rt60_arr.size),
+            "n_used_rt60_before_filter": int(len(rt60_vals)),
             "target_fs": int(self.fs),
             "recording_fs_min_max": [int(min(fs_recordings)), int(max(fs_recordings))] if len(fs_recordings) > 0 else None,
             "rt60_median": rt50,
             "rt60_p20": rt20,
             "rt60_p80": rt80,
+            "rt60_fit_bounds_used": [float(lo), float(hi)],
             "rt60_band_median": None if band_prior is None else band_prior.tolist(),
             "band_centers_ref": self.band_centers_ref.tolist(),
             "band_centers_used_for_fit": fit_band_centers.tolist(),
