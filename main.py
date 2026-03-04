@@ -17,7 +17,7 @@ def refreshState(state, state_json_path):
 if __name__ == "__main__":
     base_dir = Path(__file__).resolve().parent
     cfg_path = base_dir / "configs" / "rir_sim_se_config.json"
-    result_dir = base_dir / "testes" / "re"
+    result_dir = base_dir / "tests" / "re"
 
     # 1) Read cfg (preset room/material/generation settings).
     cfg = load_rir_sim_se_config(cfg_path)
