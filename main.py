@@ -58,7 +58,6 @@ if __name__ == "__main__":
     print("=== rir_sim_SE done ===")
     print("cfg:", str(cfg_path))
     print("state_source:", state_source)
-    print("stateChoice:", stateChoice)
     print("state_json:", cfg.acoustic_state_json)
     print("dry_wav:", cfg.dry_wav)
     print("rt60:", fit.get("rt60_median"), "range:", fit.get("rt60_p20"), fit.get("rt60_p80"))
