@@ -125,6 +125,20 @@ def apply_highpass(sig, fs, cutoff=40):
     return sosfilt(sos, sig)
 
 
+def _tail_decay_shape_from_alpha(alpha_f):
+    """
+    Build late-tail spectral shape from wall absorption curve.
+
+    We use sqrt(1 - alpha(f)) and normalize its mean:
+    - higher absorption -> weaker tail energy in that band,
+    - sqrt keeps suppression stable without over-damping.
+    """
+    a = np.clip(np.asarray(alpha_f, dtype=np.float64), 0.02, 0.99)
+    shape = np.sqrt(np.clip(1.0 - a, 1e-4, 1.0))
+    shape = shape / max(float(np.mean(shape)), 1e-8)
+    return shape
+
+
 class SoftCardioid(Cardioid):
     # pyroom source directivity wrapper
     def __init__(self, orientation, alpha=0.3, gain=1.0):
@@ -362,7 +376,7 @@ def simulate_rir_with_params(
     log_f = np.log(np.clip(freqs, 50, fs / 2))
 
     alpha_f = np.clip(alpha_continuous(log_f), 0.02, 0.99)
-    decay_shape = alpha_f / np.mean(alpha_f)
+    decay_shape = _tail_decay_shape_from_alpha(alpha_f)
 
     time_decay = np.exp(-6.9 * np.arange(len(noise)) / (RT60_target * fs))
     Noise_f *= decay_shape
@@ -378,7 +392,7 @@ def simulate_rir_with_params(
         fmin=40,
         fmax=200,
         n_modes_range=(3, 8),
-        rel_db_range=(-30, -20),
+        rel_db_range=(-38, -30),
         rng=rng,
         return_meta=True,
     )
@@ -510,7 +524,7 @@ def simulate_rir_with_params(
     log_f = np.log(np.clip(freqs, 50, fs/2))
 
     alpha_f = np.clip(alpha_continuous(log_f), 0.02, 0.99)
-    decay_shape = alpha_f / np.mean(alpha_f)
+    decay_shape = _tail_decay_shape_from_alpha(alpha_f)
 
     time_decay = np.exp(-6.9 * np.arange(len(noise)) / (RT60_target * fs))
     Noise_f *= decay_shape
@@ -526,7 +540,7 @@ def simulate_rir_with_params(
         fmin=40,
         fmax=200,
         n_modes_range=(3, 8),
-        rel_db_range=(-30, -20),
+        rel_db_range=(-38, -30),
         rng=rng,
         return_meta=True,
     )

@@ -64,6 +64,57 @@ def _to_jsonable(x):
     return x
 
 
+def _build_eq_magnitude_curve(fs, n_fft, centers_hz, gains_db):
+    fs = int(fs)
+    n_fft = int(n_fft)
+    if fs <= 0 or n_fft <= 0:
+        return np.ones(max(1, n_fft // 2 + 1), dtype=np.float64)
+
+    c = np.asarray(list(centers_hz), dtype=np.float64).reshape(-1)
+    g = np.asarray(list(gains_db), dtype=np.float64).reshape(-1)
+    m = min(c.size, g.size)
+    if m < 2:
+        return np.ones(n_fft // 2 + 1, dtype=np.float64)
+    c = c[:m]
+    g = g[:m]
+
+    order = np.argsort(c)
+    c = c[order]
+    g = g[order]
+
+    ny = 0.5 * float(fs)
+    keep = np.logical_and(c > 1.0, c < 0.999 * ny)
+    c = c[keep]
+    g = g[keep]
+    if c.size < 2:
+        return np.ones(n_fft // 2 + 1, dtype=np.float64)
+
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / float(fs))
+    f0 = float(max(1.0, freqs[1] if freqs.size > 1 else 1.0))
+    c_ext = np.concatenate(([f0], c, [0.999 * ny]))
+    g_ext = np.concatenate(([g[0]], g, [g[-1]]))
+
+    log_f = np.log(np.clip(freqs, f0, 0.999 * ny))
+    log_c = np.log(np.clip(c_ext, f0, 0.999 * ny))
+    gain_i = np.interp(log_f, log_c, g_ext)
+    return np.power(10.0, gain_i / 20.0).astype(np.float64)
+
+
+def _apply_device_eq_multich(x, fs, centers_hz, gains_db):
+    r = _as_2d_ch_first(x)
+    n = int(r.shape[1])
+    g = np.asarray(list(gains_db), dtype=np.float64).reshape(-1)
+    if g.size == 0 or np.max(np.abs(g)) < 1e-12:
+        return r
+
+    mag = _build_eq_magnitude_curve(fs=fs, n_fft=n, centers_hz=centers_hz, gains_db=gains_db)
+    out = np.zeros_like(r)
+    for ch in range(r.shape[0]):
+        X = np.fft.rfft(r[ch], n=n)
+        out[ch] = np.fft.irfft(X * mag, n=n)
+    return out
+
+
 def _build_ref2_from_rir(
     rirs,
     ref1_rirs,
@@ -232,6 +283,33 @@ def generate_rir_from_state(cfg: RIRSimSEConfig, state, seed=None):
         early_taps=int(cfg.ref2_early_taps),
         min_tap_ms=float(cfg.ref2_min_tap_ms),
     )
+
+    eq_applied = bool(cfg.device_eq_enable)
+    eq_gain_db = np.asarray(list(cfg.device_eq_gains_db), dtype=np.float64).reshape(-1)
+    if eq_applied and eq_gain_db.size > 0:
+        rirs = _apply_device_eq_multich(
+            rirs,
+            fs=int(cfg.fs),
+            centers_hz=cfg.device_eq_centers_hz,
+            gains_db=cfg.device_eq_gains_db,
+        )
+        ref1_rirs = _apply_device_eq_multich(
+            ref1_rirs,
+            fs=int(cfg.fs),
+            centers_hz=cfg.device_eq_centers_hz,
+            gains_db=cfg.device_eq_gains_db,
+        )
+        ref2_rirs = _apply_device_eq_multich(
+            ref2_rirs,
+            fs=int(cfg.fs),
+            centers_hz=cfg.device_eq_centers_hz,
+            gains_db=cfg.device_eq_gains_db,
+        )
+
+    if isinstance(meta, dict):
+        meta["device_eq_enable"] = bool(eq_applied)
+        meta["device_eq_centers_hz"] = [float(v) for v in list(cfg.device_eq_centers_hz)]
+        meta["device_eq_gains_db"] = [float(v) for v in list(cfg.device_eq_gains_db)]
 
     return {
         "rir": rirs,

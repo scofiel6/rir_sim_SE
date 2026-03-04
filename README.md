@@ -31,11 +31,22 @@ ref2 = out["ref2"]    # full-band early reference
 - Save: `save_state_json_after_invert=True` and set `acoustic_state_json`.
 - Load: set `acoustic_param_source="json"` and set `acoustic_state_json`.
 
-## Low-frequency tuning
+## Frequency-dependent absorption tuning
 
 To reduce overly strong low-band reverberation:
-- `low_freq_absorption_boost` (default `1.35`)
-- `low_freq_absorption_cut_hz` (default `500`)
+- `low_freq_absorption_boost` (default `1.75`)
+- `low_freq_absorption_cut_hz` (default `1500`)
+- `high_freq_absorption_boost` (default `1.25`)
+- `high_freq_absorption_start_hz` (default `9000`)
+
+## Device EQ
+
+Optional EQ can be applied to generated `rir/ref1/ref2`:
+- `device_eq_enable`
+- `device_eq_centers_hz`
+- `device_eq_gains_db`
+
+Default EQ is flat (`0 dB` on every band), so it keeps output unchanged.
 
 ## Demo
 

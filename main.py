@@ -21,9 +21,13 @@ if __name__ == "__main__":
         inversion_drr_c50_mode="from_recording",
         inversion_rt60_min=0.12,
         inversion_rt60_max=0.70,
-        # Increase low-frequency absorption to reduce boomy low band.
-        low_freq_absorption_boost=1.45,
-        low_freq_absorption_cut_hz=500.0,
+        # Frequency-dependent absorption tuning for room-match refinement.
+        low_freq_absorption_boost=1.75,
+        low_freq_absorption_cut_hz=1500.0,
+        high_freq_absorption_boost=1.25,
+        high_freq_absorption_start_hz=9000.0,
+        # Device EQ (flat by default: all gains 0 dB).
+        device_eq_enable=True,
         out_dir="./_out_rir_sim_se",
     )
 
@@ -63,6 +67,8 @@ if __name__ == "__main__":
     print("state_json:", cfg.acoustic_state_json)
     print("rt60:", fit.get("rt60_median"), "range:", fit.get("rt60_p20"), fit.get("rt60_p80"))
     print("drr range:", fit.get("drr_db_p20_p80"), "c50 range:", fit.get("c50_db_p20_p80"))
+    print("device_eq_enable:", out.get("meta", {}).get("device_eq_enable"))
+    print("device_eq_gains_db:", out.get("meta", {}).get("device_eq_gains_db"))
     print("rir:", out_dir / "rir.wav")
     print("ref1:", out_dir / "rir_ref1.wav")
     print("ref2:", out_dir / "rir_ref2.wav")

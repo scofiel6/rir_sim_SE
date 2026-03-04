@@ -217,7 +217,11 @@ class BaseSERIRGenerator:
         else:
             self.doa_range = tuple(doa_range)
 
-        self.band_centers_ref = np.array([125, 250, 500, 1000, 2000, 4000, 8000], dtype=np.float64)
+        # Include >8k anchors so high-frequency absorption can be explicitly shaped.
+        self.band_centers_ref = np.array(
+            [125, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000],
+            dtype=np.float64,
+        )
 
         # Updated by fit_from_recordings(...)
         self.fitted = None
@@ -466,7 +470,14 @@ class BaseSERIRGenerator:
         if band_prior is not None:
             rt = np.asarray(band_prior, dtype=np.float64).copy()
             if rt.shape[0] != self.band_centers_ref.shape[0]:
-                rt = np.full_like(self.band_centers_ref, float(base_rt60), dtype=np.float64)
+                # Backward compatibility for old state json with fewer bands:
+                # interpolate existing priors onto current band grid.
+                if rt.shape[0] >= 2:
+                    src = np.linspace(0.0, 1.0, rt.shape[0])
+                    dst = np.linspace(0.0, 1.0, self.band_centers_ref.shape[0])
+                    rt = np.interp(dst, src, rt).astype(np.float64)
+                else:
+                    rt = np.full_like(self.band_centers_ref, float(base_rt60), dtype=np.float64)
         else:
             rt = np.full_like(self.band_centers_ref, float(base_rt60), dtype=np.float64)
 
@@ -509,6 +520,16 @@ class BaseSERIRGenerator:
             m = fc <= max(80.0, lf_cut)
             if np.any(m):
                 alpha[m] = np.clip(alpha[m] * lf_boost, 0.02, 0.98)
+                alpha = self._smooth_curve(alpha, passes=1)
+
+        # Optional high-frequency absorption boost to suppress over-bright tails.
+        hf_boost = float(getattr(self, "high_freq_absorption_boost", 1.0))
+        hf_start = float(getattr(self, "high_freq_absorption_start_hz", 9000.0))
+        if hf_boost > 1.0:
+            fc = np.asarray(band_centers, dtype=np.float64)
+            m = fc >= min(0.45 * self.fs, max(2000.0, hf_start))
+            if np.any(m):
+                alpha[m] = np.clip(alpha[m] * hf_boost, 0.02, 0.99)
                 alpha = self._smooth_curve(alpha, passes=1)
 
         out = dict(params) if isinstance(params, dict) else params

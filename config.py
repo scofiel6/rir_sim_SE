@@ -42,9 +42,25 @@ class RIRSimSEConfig:
     ref2_early_taps: int = 8
     ref2_min_tap_ms: float = 0.4
 
-    # Increase low-frequency absorption to reduce boomy low-band reverberation.
-    low_freq_absorption_boost: float = 1.35
-    low_freq_absorption_cut_hz: float = 500.0
+    # Frequency-dependent absorption tuning:
+    # - low band: suppress boomy tail below cut.
+    # - high band: suppress over-bright tail above start.
+    low_freq_absorption_boost: float = 1.75
+    low_freq_absorption_cut_hz: float = 1500.0
+    high_freq_absorption_boost: float = 1.25
+    high_freq_absorption_start_hz: float = 9000.0
+
+    # Optional device EQ on generated RIR/ref outputs.
+    # Default is flat (all 0 dB), so it does not alter signals.
+    device_eq_enable: bool = True
+    device_eq_centers_hz: Tuple[float, ...] = (
+        63.0, 125.0, 250.0, 500.0, 1000.0,
+        2000.0, 4000.0, 8000.0, 12000.0, 16000.0,
+    )
+    device_eq_gains_db: Tuple[float, ...] = (
+        0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0,
+    )
 
     # Array settings.
     mic_array_type: str = "linear"
