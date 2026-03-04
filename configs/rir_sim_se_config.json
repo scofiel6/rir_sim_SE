@@ -6,7 +6,6 @@
   "room_jitter_ratio": 0.06,
   "custom_room_range": null,
   "generic_room_range": null,
-  "out_dir": "./_out_rir_sim_se",
   "dry_wav": "/home/xukj/dataset_rir/sound_field_sim/test.wav",
 
   "pulse_recording": "/home/xukj/dataset_comsolTest/room_test",

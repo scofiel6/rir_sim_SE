@@ -48,16 +48,9 @@ class RIRSimSEConfig:
     room_jitter_ratio: float = 0.04
     custom_room_range: Optional[RoomRange] = None
     generic_room_range: Optional[RoomRange] = None
-    out_dir: str = "./_out_rir_sim_se"
     dry_wav: str = "/home/xukj/dataset_rir/sound_field_sim/test.wav"
-
-    # Baseline selection:
-    # - "invert": estimate acoustic params from recorded IR folder.
-    # - "json": read acoustic params from an existing json file.
-    acoustic_param_source: str = "invert"
     pulse_recording: Optional[str] = None
     acoustic_state_json: Optional[str] = None
-    save_state_json_after_invert: bool = True
     # Keep short tails for small-room SE.
     rir_seconds: float = 1.4
 
@@ -172,7 +165,6 @@ def load_rir_sim_se_config(config_path):
 
     base_dir = p.parent
     # Keep runtime clean: all path-like fields are normalized here.
-    cfg.out_dir = _resolve_path_near(base_dir, cfg.out_dir)
     cfg.dry_wav = _resolve_path_near(base_dir, cfg.dry_wav)
     cfg.pulse_recording = _resolve_path_near(base_dir, cfg.pulse_recording)
     if cfg.acoustic_state_json:

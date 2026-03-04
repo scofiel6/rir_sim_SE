@@ -10,29 +10,23 @@ from rir_sim_se import (
 )
 
 
-def refreshState(state, state_json_path):
-    save_acoustic_state_json(state, state_json_path)
-
-
 if __name__ == "__main__":
     base_dir = Path(__file__).resolve().parent
     cfg_path = base_dir / "configs" / "rir_sim_se_config.json"
     result_dir = base_dir / "tests" / "re"
+    state_choice = "json"  # "invert" or "json"
 
-    # 1) Read cfg (preset room/material/generation settings).
     cfg = load_rir_sim_se_config(cfg_path)
     result_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2) Build state explicitly from recording or acoustic_state.json.
-    # invert from recording
-    # state = invert_acoustic_state(cfg, pulse_recording=cfg.pulse_recording)
-    # refreshState(state, cfg.acoustic_state_json)
-    # state_source = f"from_recording: {cfg.pulse_recording}"
-    # json
-    state = load_acoustic_state_json(cfg, cfg.acoustic_state_json)
-    state_source = f"from_acoustic_state_json: {cfg.acoustic_state_json}"
+    if state_choice == "invert":
+        state = invert_acoustic_state(cfg, pulse_recording=cfg.pulse_recording)
+        save_acoustic_state_json(state, cfg.acoustic_state_json)
+        state_source = f"from_recording: {cfg.pulse_recording}"
+    else:
+        state = load_acoustic_state_json(cfg, cfg.acoustic_state_json)
+        state_source = f"from_acoustic_state_json: {cfg.acoustic_state_json}"
 
-    # 3) Generate RIR outputs from cfg + state.
     out = generate_rir_from_state(cfg, state=state)
     rir = out["rir"]
     ref1 = out["ref1"]
@@ -42,7 +36,6 @@ if __name__ == "__main__":
     save_wav(result_dir / "rir_ref1.wav", ref1, cfg.fs)
     save_wav(result_dir / "rir_ref2.wav", ref2, cfg.fs)
 
-    # 4) Convolve dry with RIR/ref and save all outputs to ./testes/re.
     dry, dry_fs = read_audio_mono(cfg.dry_wav)
     dry = resample_mono(dry, dry_fs, cfg.fs, allow_upsample=False)
     wet = convolve_dry_rir(dry, rir)
@@ -54,3 +47,4 @@ if __name__ == "__main__":
     save_wav(result_dir / "wet_ref1.wav", wet_ref1, cfg.fs)
     save_wav(result_dir / "wet_ref2.wav", wet_ref2, cfg.fs)
 
+    print("state_source:", state_source)

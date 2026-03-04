@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from acoustic_inversion import create_generator_from_fit, invert_acoustic_params
-from config import RIRSimSEConfig, load_rir_sim_se_config
+from config import RIRSimSEConfig
 from rir_generation import generate_single_rir
 
 
@@ -264,29 +264,6 @@ def load_acoustic_state_json(cfg: RIRSimSEConfig, json_path):
     }
 
 
-def prepare_state_from_cfg(cfg: RIRSimSEConfig):
-    """
-    Baseline-(1): prepare acoustic state by:
-    - inverting from IR folder, or
-    - loading existing state json.
-    """
-    src = str(cfg.acoustic_param_source).strip().lower()
-    if src not in ("invert", "json"):
-        raise ValueError(f"Unsupported acoustic_param_source: {cfg.acoustic_param_source!r}")
-
-    if src == "json":
-        if not cfg.acoustic_state_json:
-            raise ValueError("cfg.acoustic_state_json is required when acoustic_param_source='json'")
-        return load_acoustic_state_json(cfg, cfg.acoustic_state_json)
-
-    if not cfg.pulse_recording:
-        raise ValueError("cfg.pulse_recording is required when acoustic_param_source='invert'")
-    state = invert_acoustic_state(cfg, pulse_recording=cfg.pulse_recording)
-    if bool(cfg.save_state_json_after_invert) and cfg.acoustic_state_json:
-        save_acoustic_state_json(state, cfg.acoustic_state_json)
-    return state
-
-
 def generate_rir_from_state(cfg: RIRSimSEConfig, state, seed=None):
     """
     Step-2: generate one full RIR + two refs from inversion state.
@@ -352,37 +329,3 @@ def generate_rir_from_state(cfg: RIRSimSEConfig, state, seed=None):
         "fit": state.get("fit"),
         "ref2_trace": ref2_trace,
     }
-
-
-# Backward-compatible names.
-def prepare_rir_sim_se_state(cfg: RIRSimSEConfig, pulse_recording):
-    return invert_acoustic_state(cfg, pulse_recording)
-
-
-def run_rir_sim_se(cfg: RIRSimSEConfig, pulse_recording=None, state=None, seed=None):
-    if state is None:
-        if pulse_recording is not None:
-            state = invert_acoustic_state(cfg, pulse_recording)
-        else:
-            state = prepare_state_from_cfg(cfg)
-    return generate_rir_from_state(cfg, state=state, seed=seed)
-
-
-def generate_rir_from_files(cfg_json_path, state_json_path=None, seed=None):
-    """
-    Convenience API for deployment/training pipeline:
-    - load cfg from json file,
-    - load acoustic state from json file (or follow cfg source strategy),
-    - generate rir/ref1/ref2.
-    """
-    cfg = load_rir_sim_se_config(cfg_json_path)
-    if state_json_path is not None:
-        state = load_acoustic_state_json(cfg, state_json_path)
-    else:
-        state = prepare_state_from_cfg(cfg)
-    return generate_rir_from_state(cfg, state=state, seed=seed)
-
-
-def clear_rir_sim_se_state_cache():
-    # Cache removed for simpler pipeline.
-    return None
