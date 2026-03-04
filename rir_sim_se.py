@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from acoustic_inversion import create_generator_from_fit, invert_acoustic_params
-from config import RIRSimSEConfig
+from config import RIRSimSEConfig, load_rir_sim_se_config
 from rir_generation import generate_single_rir
 
 
@@ -332,6 +332,21 @@ def run_rir_sim_se(cfg: RIRSimSEConfig, pulse_recording=None, state=None, seed=N
             state = invert_acoustic_state(cfg, pulse_recording)
         else:
             state = prepare_state_from_cfg(cfg)
+    return generate_rir_from_state(cfg, state=state, seed=seed)
+
+
+def generate_rir_from_files(cfg_json_path, state_json_path=None, seed=None):
+    """
+    Convenience API for deployment/training pipeline:
+    - load cfg from json file,
+    - load acoustic state from json file (or follow cfg source strategy),
+    - generate rir/ref1/ref2.
+    """
+    cfg = load_rir_sim_se_config(cfg_json_path)
+    if state_json_path is not None:
+        state = load_acoustic_state_json(cfg, state_json_path)
+    else:
+        state = prepare_state_from_cfg(cfg)
     return generate_rir_from_state(cfg, state=state, seed=seed)
 
 

@@ -83,11 +83,12 @@ def create_generator(cfg: RIRSimSEConfig):
         enable_physical_calibration=True,
         enable_final_output_norm=False,
     )
-    # Frequency-dependent absorption tuning for room-match refinement.
-    gen.low_freq_absorption_boost = float(max(1.0, cfg.low_freq_absorption_boost))
-    gen.low_freq_absorption_cut_hz = float(max(80.0, cfg.low_freq_absorption_cut_hz))
-    gen.high_freq_absorption_boost = float(max(1.0, cfg.high_freq_absorption_boost))
-    gen.high_freq_absorption_start_hz = float(max(2000.0, cfg.high_freq_absorption_start_hz))
+    # Physical material profile (frequency-dependent) used inside RIR generation.
+    gen.material_center_freqs = np.asarray(cfg.material_center_freqs_hz, dtype=np.float64)
+    gen.material_absorption_curve = np.asarray(cfg.material_absorption_curve, dtype=np.float64)
+    gen.material_scattering_curve = np.asarray(cfg.material_scattering_curve, dtype=np.float64)
+    gen.material_face_absorption_scale = dict(cfg.material_face_absorption_scale)
+    gen.material_face_scattering_scale = dict(cfg.material_face_scattering_scale)
     return gen
 
 

@@ -8,36 +8,28 @@ Convolution is intentionally outside generator and done in `main.py`.
 
 ## Baseline-(1) and Baseline-(2)
 
-```python
-from config import RIRSimSEConfig
-from rir_sim_se import prepare_state_from_cfg, generate_rir_from_state
-
-cfg = RIRSimSEConfig(
-    acoustic_param_source="invert",  # or "json"
-    pulse_recording="/path/to/ir_folder",
-    acoustic_state_json="./_out_rir_sim_se/acoustic_state.json",
-)
-
-state = prepare_state_from_cfg(cfg)   # invert or json-load (by cfg)
-out = generate_rir_from_state(cfg, state)
-
-rir = out["rir"]      # full RIR
-ref1 = out["ref1"]    # early-dominant reference
-ref2 = out["ref2"]    # full-band early reference
-```
+`cfg` and `acoustic_state` can both be file-driven.
 
 ## State JSON
 
 - Save: `save_state_json_after_invert=True` and set `acoustic_state_json`.
 - Load: set `acoustic_param_source="json"` and set `acoustic_state_json`.
+- Path rule: when `acoustic_state_json` is relative (or empty), it is resolved near cfg json file.
+  Default target is `<cfg_dir>/acoustic_state.json`.
 
-## Frequency-dependent absorption tuning
+## Config JSON
 
-To reduce overly strong low-band reverberation:
-- `low_freq_absorption_boost` (default `1.75`)
-- `low_freq_absorption_cut_hz` (default `1500`)
-- `high_freq_absorption_boost` (default `1.25`)
-- `high_freq_absorption_start_hz` (default `9000`)
+Use `configs/rir_sim_se_config.json` as the main config file.
+
+Key physical fields:
+- `material_center_freqs_hz`
+- `material_absorption_curve`
+- `material_scattering_curve`
+- `material_face_absorption_scale`
+- `material_face_scattering_scale`
+
+These are applied inside the RIR generation strategy (absorption/scattering coefficients),
+not as post-hoc low/high-band gain fixes.
 
 ## Device EQ
 
@@ -51,5 +43,16 @@ Default EQ is flat (`0 dB` on every band), so it keeps output unchanged.
 ## Demo
 
 ```bash
-python main.py
+python main.py --cfg ./configs/rir_sim_se_config.json --dry-wav /path/to/dry.wav
+```
+
+## From Files API
+
+```python
+from rir_sim_se import generate_rir_from_files
+
+out = generate_rir_from_files(
+    cfg_json_path="./configs/rir_sim_se_config.json",
+    state_json_path="./_out_rir_sim_se/acoustic_state.json",  # optional
+)
 ```

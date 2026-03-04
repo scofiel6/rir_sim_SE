@@ -1,0 +1,57 @@
+{
+  "fs": 32000,
+  "seed": 2026,
+  "use_drr_c50": true,
+  "room_size_hint": [3.6, 3.8, 2.7],
+  "room_jitter_ratio": 0.04,
+  "custom_room_range": null,
+  "generic_room_range": null,
+  "out_dir": "./_out_rir_sim_se",
+  "dry_wav": "/home/xukj/dataset_rir/sound_field_sim/test.wav",
+
+  "pulse_recording": "/home/xukj/dataset_comsolTest/room_test",
+  "acoustic_state_json": "acoustic_state.json",
+  "rir_seconds": 1.4,
+
+  "inversion_rt60_min": 0.12,
+  "inversion_rt60_max": 0.7,
+  "inversion_drr_c50_mode": "from_recording",
+  "inversion_drr_c50_jitter_db": 0.5,
+  "inversion_drr_c50_from_recording_jitter_db": 0.2,
+
+  "ref_early_ms": 20.0,
+  "ref_late_tail_db": -26.0,
+  "ref2_early_ms": null,
+  "ref2_early_taps": 8,
+  "ref2_min_tap_ms": 0.4,
+
+  "material_center_freqs_hz": [125, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000],
+  "material_absorption_curve": [1.3, 1.22, 1.12, 1.0, 0.94, 0.92, 0.95, 1.1, 1.2],
+  "material_scattering_curve": [0.22, 0.24, 0.26, 0.3, 0.34, 0.4, 0.48, 0.54, 0.58],
+  "material_face_absorption_scale": {
+    "west": 1.0,
+    "east": 1.0,
+    "south": 1.0,
+    "north": 1.0,
+    "floor": 1.0,
+    "ceiling": 1.0
+  },
+  "material_face_scattering_scale": {
+    "west": 1.0,
+    "east": 1.0,
+    "south": 1.0,
+    "north": 1.0,
+    "floor": 1.0,
+    "ceiling": 1.0
+  },
+
+  "device_eq_enable": true,
+  "device_eq_centers_hz": [63, 125, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000],
+  "device_eq_gains_db": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+
+  "mic_array_type": "linear",
+  "mic_num": 4,
+  "mic_spacing": 0.04,
+  "mic_radius": 0.04,
+  "mic_position_jitter_m": 0.001
+}

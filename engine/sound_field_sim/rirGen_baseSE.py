@@ -222,6 +222,22 @@ class BaseSERIRGenerator:
             [125, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000],
             dtype=np.float64,
         )
+        # Physical material profile defaults (can be overridden by config file).
+        self.material_center_freqs = self.band_centers_ref.copy()
+        self.material_absorption_curve = np.array(
+            [1.30, 1.22, 1.12, 1.00, 0.94, 0.92, 0.95, 1.10, 1.20],
+            dtype=np.float64,
+        )
+        self.material_scattering_curve = np.array(
+            [0.22, 0.24, 0.26, 0.30, 0.34, 0.40, 0.48, 0.54, 0.58],
+            dtype=np.float64,
+        )
+        self.material_face_absorption_scale = {
+            "west": 1.0, "east": 1.0, "south": 1.0, "north": 1.0, "floor": 1.0, "ceiling": 1.0
+        }
+        self.material_face_scattering_scale = {
+            "west": 1.0, "east": 1.0, "south": 1.0, "north": 1.0, "floor": 1.0, "ceiling": 1.0
+        }
 
         # Updated by fit_from_recordings(...)
         self.fitted = None
@@ -492,14 +508,83 @@ class BaseSERIRGenerator:
         return np.clip(rt, 0.08, 2.8)
 
     @staticmethod
-    def _to_material_dict(keys, coeffs, center_freqs, rng):
+    def _interp_profile(src_freqs, src_vals, target_freqs, default_val):
+        sf = np.asarray(src_freqs, dtype=np.float64).reshape(-1)
+        sv = np.asarray(src_vals, dtype=np.float64).reshape(-1)
+        tf = np.asarray(target_freqs, dtype=np.float64).reshape(-1)
+        if tf.size == 0:
+            return tf
+        if sf.size < 2 or sv.size < 2:
+            return np.full(tf.shape, float(default_val), dtype=np.float64)
+        n = min(sf.size, sv.size)
+        sf = sf[:n]
+        sv = sv[:n]
+
+        order = np.argsort(sf)
+        sf = sf[order]
+        sv = sv[order]
+        sf, uniq = np.unique(sf, return_index=True)
+        sv = sv[uniq]
+        if sf.size < 2:
+            return np.full(tf.shape, float(default_val), dtype=np.float64)
+
+        f_min = float(max(20.0, sf[0]))
+        f_max = float(max(f_min * 1.05, sf[-1]))
+        tf_c = np.clip(tf, f_min, f_max)
+        return np.interp(np.log(tf_c), np.log(sf), sv).astype(np.float64)
+
+    @staticmethod
+    def _weighted_scattering_scalar(scattering_curve, center_freqs):
+        s = np.asarray(scattering_curve, dtype=np.float64).reshape(-1)
+        f = np.asarray(center_freqs, dtype=np.float64).reshape(-1)
+        n = min(s.size, f.size)
+        if n == 0:
+            return 0.35
+        s = s[:n]
+        f = f[:n]
+        f0 = max(float(np.min(f)), 1.0)
+        w = np.sqrt(np.maximum(f, 1.0) / f0)
+        return float(np.clip(np.average(s, weights=w), 0.05, 0.95))
+
+    @staticmethod
+    def _to_material_dict(
+        keys,
+        coeffs,
+        center_freqs,
+        rng,
+        scattering_curve=None,
+        face_abs_scale=None,
+        face_scat_scale=None,
+    ):
         out = {}
+        c0 = np.asarray(coeffs, dtype=np.float64).reshape(-1)
+        fc = np.asarray(center_freqs, dtype=np.float64).reshape(-1)
+        if c0.size == 0:
+            return out
+
+        if scattering_curve is None:
+            s_curve = np.full(c0.shape, 0.35, dtype=np.float64)
+        else:
+            s_raw = np.asarray(scattering_curve, dtype=np.float64).reshape(-1)
+            if s_raw.size != c0.size:
+                s_curve = np.full(c0.shape, float(np.mean(s_raw)) if s_raw.size > 0 else 0.35, dtype=np.float64)
+            else:
+                s_curve = s_raw
+        s_base = BaseSERIRGenerator._weighted_scattering_scalar(s_curve, fc)
+
+        abs_scale_map = dict(face_abs_scale or {})
+        scat_scale_map = dict(face_scat_scale or {})
         for k in keys:
-            c = np.clip(coeffs * rng.uniform(0.92, 1.08, size=len(coeffs)), 0.01, 0.99)
+            abs_scale = float(abs_scale_map.get(k, 1.0))
+            scat_scale = float(scat_scale_map.get(k, 1.0))
+
+            c = c0 * abs_scale
+            c = np.clip(c * rng.uniform(0.96, 1.04, size=c.shape[0]), 0.01, 0.99)
+            s = float(np.clip(s_base * scat_scale * rng.uniform(0.95, 1.05), 0.05, 0.95))
             out[k] = pra.Material({
                 "coeffs": c,
-                "scattering": float(rng.uniform(0.2, 0.6)),
-                "center_freqs": center_freqs,
+                "scattering": s,
+                "center_freqs": fc,
             })
         return out
 
@@ -512,25 +597,22 @@ class BaseSERIRGenerator:
         alpha = np.clip(0.161 * V / (S * np.maximum(band_rt60, 1e-4)), 0.02, 0.95)
         alpha = self._smooth_curve(alpha, passes=1)
 
-        # Optional low-frequency absorption boost to reduce boomy low-band energy.
-        lf_boost = float(getattr(self, "low_freq_absorption_boost", 1.0))
-        lf_cut = float(getattr(self, "low_freq_absorption_cut_hz", 500.0))
-        if lf_boost > 1.0:
-            fc = np.asarray(band_centers, dtype=np.float64)
-            m = fc <= max(80.0, lf_cut)
-            if np.any(m):
-                alpha[m] = np.clip(alpha[m] * lf_boost, 0.02, 0.98)
-                alpha = self._smooth_curve(alpha, passes=1)
+        # Apply physical material absorption shape directly in coefficient domain.
+        # This is not a post-hoc gain trick: it reshapes absorption alpha(f) used by
+        # the room simulator and therefore changes decay physically.
+        fc = np.asarray(band_centers, dtype=np.float64)
+        prof_f = np.asarray(getattr(self, "material_center_freqs", fc), dtype=np.float64)
+        prof_a = np.asarray(getattr(self, "material_absorption_curve", np.ones_like(prof_f)), dtype=np.float64)
+        abs_shape = self._interp_profile(prof_f, prof_a, fc, default_val=1.0)
+        abs_shape = np.clip(abs_shape, 0.35, 2.5)
+        abs_shape = abs_shape / max(float(np.mean(abs_shape)), 1e-8)
+        alpha = np.clip(alpha * abs_shape, 0.02, 0.98)
+        alpha = self._smooth_curve(alpha, passes=1)
 
-        # Optional high-frequency absorption boost to suppress over-bright tails.
-        hf_boost = float(getattr(self, "high_freq_absorption_boost", 1.0))
-        hf_start = float(getattr(self, "high_freq_absorption_start_hz", 9000.0))
-        if hf_boost > 1.0:
-            fc = np.asarray(band_centers, dtype=np.float64)
-            m = fc >= min(0.45 * self.fs, max(2000.0, hf_start))
-            if np.any(m):
-                alpha[m] = np.clip(alpha[m] * hf_boost, 0.02, 0.99)
-                alpha = self._smooth_curve(alpha, passes=1)
+        # Frequency-dependent scattering profile (converted to pyroom scalar per face).
+        prof_s = np.asarray(getattr(self, "material_scattering_curve", np.full_like(prof_f, 0.35)), dtype=np.float64)
+        scat_curve = self._interp_profile(prof_f, prof_s, fc, default_val=0.35)
+        scat_curve = np.clip(scat_curve, 0.05, 0.95)
 
         out = dict(params) if isinstance(params, dict) else params
         if not isinstance(out, dict):
@@ -540,12 +622,30 @@ class BaseSERIRGenerator:
         log_fc = np.log(np.asarray(band_centers, dtype=np.float64))
         out["alpha_continuous"] = interp1d(log_fc, np.asarray(alpha, dtype=np.float64), kind="linear", fill_value="extrapolate")
 
+        face_abs_scale = getattr(self, "material_face_absorption_scale", None)
+        face_scat_scale = getattr(self, "material_face_scattering_scale", None)
         if "materials" in out:
             keys = list(out["materials"].keys())
-            out["materials"] = self._to_material_dict(keys, alpha, out["center_freqs"], rng)
+            out["materials"] = self._to_material_dict(
+                keys,
+                alpha,
+                out["center_freqs"],
+                rng,
+                scattering_curve=scat_curve,
+                face_abs_scale=face_abs_scale,
+                face_scat_scale=face_scat_scale,
+            )
         if "material" in out:
             keys = list(out["material"].keys())
-            out["material"] = self._to_material_dict(keys, alpha, out["center_freqs"], rng)
+            out["material"] = self._to_material_dict(
+                keys,
+                alpha,
+                out["center_freqs"],
+                rng,
+                scattering_curve=scat_curve,
+                face_abs_scale=face_abs_scale,
+                face_scat_scale=face_scat_scale,
+            )
         return out
 
     def _direct_ref(self, src_xyz, mic_xyz, n_samples):
