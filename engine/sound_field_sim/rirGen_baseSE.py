@@ -1,5 +1,4 @@
-﻿import inspect
-import json
+﻿import json
 from pathlib import Path
 from math import gcd
 
@@ -31,113 +30,34 @@ def _resample_poly_1d(x, fs_in, fs_out, allow_upsample=False):
     y = resample_poly(x, up, down).astype(np.float64)
     return np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
 
-def _sig_params(func):
-    try:
-        return list(inspect.signature(func).parameters.keys())
-    except Exception:
-        return []
-
-
-def _normalize_params_for_sim(params, need_key):
-    if not isinstance(params, dict):
-        return params
-    if need_key in params:
-        return params
-    out = dict(params)
-    if need_key == "material" and "materials" in params:
-        out["material"] = params["materials"]
-    if need_key == "materials" and "material" in params:
-        out["materials"] = params["material"]
-    return out
-
-
 def _call_sample_room_params(imv2_mod, lx, ly, lz, fs, rng, rt60_tgt):
-    """
-    Compat wrapper for room-param sampling across im_rir_v2 variants.
-
-    Why:
-    im_rir_v2 may evolve over time (parameter names or optional args differ).
-    This wrapper isolates API differences so the generator logic stays stable.
-    """
-    if hasattr(imv2_mod, "sample_room_params"):
-        fn = imv2_mod.sample_room_params
-        p = _sig_params(fn)
-        kw = {}
-        if "rng" in p:
-            kw["rng"] = rng
-        if "rt60_target" in p:
-            kw["rt60_target"] = float(rt60_tgt)
-        elif "rt60_override" in p:
-            kw["rt60_override"] = float(rt60_tgt)
-        elif "rt60" in p:
-            kw["rt60"] = float(rt60_tgt)
-
-        if "fs" in p:
-            try:
-                fs_required = (inspect.signature(fn).parameters["fs"].default is inspect._empty)
-            except Exception:
-                fs_required = False
-            if fs_required:
-                return fn(lx, ly, lz, fs, **kw)
-            kw["fs"] = fs
-        return fn(lx, ly, lz, **kw)
-
-    if hasattr(imv2_mod, "sample_room_params_legacy"):
-        fn = imv2_mod.sample_room_params_legacy
-        p = _sig_params(fn)
-        kw = {}
-        if "rng" in p:
-            kw["rng"] = rng
-        if "rt60_override" in p:
-            kw["rt60_override"] = float(rt60_tgt)
-        return fn(lx, ly, lz, fs, **kw)
-
-    raise AttributeError("im_rir_v2 has no sample_room_params / sample_room_params_legacy")
+    if not hasattr(imv2_mod, "sample_room_params"):
+        raise AttributeError("im_rir_v2 has no sample_room_params")
+    return imv2_mod.sample_room_params(
+        float(lx),
+        float(ly),
+        float(lz),
+        fs=int(fs),
+        rng=rng,
+        rt60_target=float(rt60_tgt),
+    )
 
 
 def _call_simulate_rir(imv2_mod, *, mic_xyz, src_xyz, doa_deg, lx, ly, lz, fs, params, rng):
-    """
-    Compat wrapper for simulate_rir_with_params across signatures.
-
-    Some im_rir_v2 branches use vector-style args, others still use legacy
-    scalar signatures. We normalize this difference here and always return
-    `(rir, rt60)` in a consistent format for the SE pipeline.
-    """
     if not hasattr(imv2_mod, "simulate_rir_with_params"):
         raise AttributeError("im_rir_v2 has no simulate_rir_with_params")
 
-    fn = imv2_mod.simulate_rir_with_params
-    p = _sig_params(fn)
-    is_legacy = ("p1x" in p) or ("srcx" in p)
-
-    if not is_legacy:
-        kw = {}
-        kw["mic_xyz"] = np.asarray(mic_xyz, dtype=np.float64)
-        kw["src_xyz"] = np.asarray(src_xyz, dtype=np.float64)
-        if "angle_offset" in p:
-            kw["angle_offset"] = float(doa_deg)
-        elif "doa_deg" in p:
-            kw["doa_deg"] = float(doa_deg)
-        else:
-            kw["angle_offset"] = float(doa_deg)
-        if "lx" in p:
-            kw["lx"] = float(lx)
-        if "ly" in p:
-            kw["ly"] = float(ly)
-        if "lz" in p:
-            kw["lz"] = float(lz)
-        if "fs" in p:
-            kw["fs"] = int(fs)
-        if "params" in p:
-            kw["params"] = _normalize_params_for_sim(params, "materials")
-        if "rng" in p:
-            kw["rng"] = rng
-        out = fn(**kw)
-    else:
-        p1x, p1y, p1z = [float(v) for v in mic_xyz]
-        srcx, srcy, srcz = [float(v) for v in src_xyz]
-        params2 = _normalize_params_for_sim(params, "material")
-        out = fn(p1x, p1y, p1z, srcx, srcy, srcz, float(doa_deg), float(lx), float(ly), float(lz), int(fs), params2, rng=rng)
+    out = imv2_mod.simulate_rir_with_params(
+        mic_xyz=np.asarray(mic_xyz, dtype=np.float64),
+        src_xyz=np.asarray(src_xyz, dtype=np.float64),
+        angle_offset=float(doa_deg),
+        lx=float(lx),
+        ly=float(ly),
+        lz=float(lz),
+        fs=int(fs),
+        params=params,
+        rng=rng,
+    )
 
     if isinstance(out, tuple):
         rir = out[0]
@@ -1903,3 +1823,4 @@ if __name__ == "__main__":
     print("drr target/real:", meta.get("drr_target_db"), meta.get("drr_real_db"))
     print("c50 target/real:", meta.get("c50_target_db"), meta.get("c50_real_db"))
     print("drr_c50_applied:", meta.get("drr_c50_applied"))
+
