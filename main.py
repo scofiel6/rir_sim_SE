@@ -2,7 +2,7 @@ from pathlib import Path
 
 from audio_io import convolve_dry_rir, read_audio_mono, resample_mono, save_wav
 from config import RIRSimSEConfig
-from rir_sim_se import generate_rir_from_state, invert_acoustic_state
+from rir_sim_se import generate_rir_from_state, prepare_state_from_cfg
 
 
 if __name__ == "__main__":
@@ -12,23 +12,30 @@ if __name__ == "__main__":
         use_drr_c50=True,
         # Keep shorter tail for small-room speech tasks.
         rir_seconds=1.4,
-        # All your inversion recordings are IR captures.
+        # Baseline-(1): choose "invert" or "json".
+        acoustic_param_source="invert",
+        pulse_recording="/home/xukj/dataset_comsolTest/room_test",
+        acoustic_state_json="./_out_rir_sim_se/acoustic_state.json",
+        save_state_json_after_invert=True,
+        # All inversion recordings are IR captures.
         inversion_drr_c50_mode="from_recording",
         inversion_rt60_min=0.12,
         inversion_rt60_max=0.70,
+        # Increase low-frequency absorption to reduce boomy low band.
+        low_freq_absorption_boost=1.45,
+        low_freq_absorption_cut_hz=500.0,
         out_dir="./_out_rir_sim_se",
     )
 
-    pulse_recording = "/home/xukj/dataset_comsolTest/room_test"
     dry_wav = "/home/xukj/dataset_rir/sound_field_sim/test.wav"
 
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step-1: inversion state from measured impulse recordings.
-    state = invert_acoustic_state(cfg, pulse_recording=pulse_recording)
+    # Step-(1): inversion from IR folder OR load json (chosen by cfg.acoustic_param_source).
+    state = prepare_state_from_cfg(cfg)
 
-    # Step-2: generate RIRs only (no convolution inside generator module).
+    # Step-(2): generate RIRs only (no convolution inside generator module).
     out = generate_rir_from_state(cfg, state=state)
     rir = out["rir"]
     ref1 = out["ref1"]
@@ -52,6 +59,8 @@ if __name__ == "__main__":
 
     fit = out.get("fit", {})
     print("=== rir_sim_SE done ===")
+    print("acoustic_param_source:", cfg.acoustic_param_source)
+    print("state_json:", cfg.acoustic_state_json)
     print("rt60:", fit.get("rt60_median"), "range:", fit.get("rt60_p20"), fit.get("rt60_p80"))
     print("drr range:", fit.get("drr_db_p20_p80"), "c50 range:", fit.get("c50_db_p20_p80"))
     print("rir:", out_dir / "rir.wav")

@@ -501,6 +501,16 @@ class BaseSERIRGenerator:
         alpha = np.clip(0.161 * V / (S * np.maximum(band_rt60, 1e-4)), 0.02, 0.95)
         alpha = self._smooth_curve(alpha, passes=1)
 
+        # Optional low-frequency absorption boost to reduce boomy low-band energy.
+        lf_boost = float(getattr(self, "low_freq_absorption_boost", 1.0))
+        lf_cut = float(getattr(self, "low_freq_absorption_cut_hz", 500.0))
+        if lf_boost > 1.0:
+            fc = np.asarray(band_centers, dtype=np.float64)
+            m = fc <= max(80.0, lf_cut)
+            if np.any(m):
+                alpha[m] = np.clip(alpha[m] * lf_boost, 0.02, 0.98)
+                alpha = self._smooth_curve(alpha, passes=1)
+
         out = dict(params) if isinstance(params, dict) else params
         if not isinstance(out, dict):
             return out

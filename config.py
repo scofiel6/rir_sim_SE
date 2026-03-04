@@ -14,6 +14,14 @@ class RIRSimSEConfig:
     custom_room_range: Optional[RoomRange] = None
     generic_room_range: Optional[RoomRange] = None
     out_dir: str = "./_out_rir_sim_se"
+
+    # Baseline selection:
+    # - "invert": estimate acoustic params from recorded IR folder.
+    # - "json": read acoustic params from an existing json file.
+    acoustic_param_source: str = "invert"
+    pulse_recording: Optional[str] = None
+    acoustic_state_json: Optional[str] = None
+    save_state_json_after_invert: bool = True
     # Keep short tails for small-room SE.
     rir_seconds: float = 1.4
 
@@ -33,6 +41,10 @@ class RIRSimSEConfig:
     ref2_early_ms: Optional[float] = None
     ref2_early_taps: int = 8
     ref2_min_tap_ms: float = 0.4
+
+    # Increase low-frequency absorption to reduce boomy low-band reverberation.
+    low_freq_absorption_boost: float = 1.35
+    low_freq_absorption_cut_hz: float = 500.0
 
     # Array settings.
     mic_array_type: str = "linear"

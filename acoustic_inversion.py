@@ -83,6 +83,9 @@ def create_generator(cfg: RIRSimSEConfig):
         enable_physical_calibration=True,
         enable_final_output_norm=False,
     )
+    # Low-frequency absorption tuning for room-match refinement.
+    gen.low_freq_absorption_boost = float(max(1.0, cfg.low_freq_absorption_boost))
+    gen.low_freq_absorption_cut_hz = float(max(80.0, cfg.low_freq_absorption_cut_hz))
     return gen
 
 

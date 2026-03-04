@@ -1,6 +1,9 @@
+import json
+from pathlib import Path
+
 import numpy as np
 
-from acoustic_inversion import invert_acoustic_params
+from acoustic_inversion import create_generator_from_fit, invert_acoustic_params
 from config import RIRSimSEConfig
 from rir_generation import generate_single_rir
 
@@ -43,6 +46,22 @@ def _select_sparse_peak_indices(x_abs, n_taps, min_gap):
         if len(chosen) >= n_taps:
             break
     return sorted(chosen)
+
+
+def _to_jsonable(x):
+    if isinstance(x, dict):
+        return {str(k): _to_jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_to_jsonable(v) for v in x]
+    if isinstance(x, np.ndarray):
+        return _to_jsonable(x.tolist())
+    if isinstance(x, np.integer):
+        return int(x)
+    if isinstance(x, np.floating):
+        return float(x)
+    if isinstance(x, np.bool_):
+        return bool(x)
+    return x
 
 
 def _build_ref2_from_rir(
@@ -121,6 +140,69 @@ def invert_acoustic_state(cfg: RIRSimSEConfig, pulse_recording):
     }
 
 
+def save_acoustic_state_json(state, json_path):
+    """
+    Save inversion result to json so it can be reused without re-fitting.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("state must be a dict")
+    fit = state.get("fit")
+    if not isinstance(fit, dict):
+        raise ValueError("state['fit'] must be a dict")
+    payload = {
+        "schema_version": 1,
+        "fit": _to_jsonable(fit),
+        "pulse_recording": state.get("pulse_recording"),
+    }
+    p = Path(json_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(p)
+
+
+def load_acoustic_state_json(cfg: RIRSimSEConfig, json_path):
+    """
+    Load inversion result from json and rebuild generator from fitted params.
+    """
+    p = Path(json_path)
+    if not p.exists():
+        raise FileNotFoundError(f"State json not found: {json_path}")
+    payload = json.loads(p.read_text(encoding="utf-8"))
+    fit = payload.get("fit")
+    if not isinstance(fit, dict):
+        raise ValueError(f"Invalid state json (missing fit dict): {json_path}")
+    gen = create_generator_from_fit(cfg, fit)
+    return {
+        "gen": gen,
+        "fit": fit,
+        "pulse_recording": payload.get("pulse_recording"),
+        "state_json_path": str(p),
+    }
+
+
+def prepare_state_from_cfg(cfg: RIRSimSEConfig):
+    """
+    Baseline-(1): prepare acoustic state by:
+    - inverting from IR folder, or
+    - loading existing state json.
+    """
+    src = str(cfg.acoustic_param_source).strip().lower()
+    if src not in ("invert", "json"):
+        raise ValueError(f"Unsupported acoustic_param_source: {cfg.acoustic_param_source!r}")
+
+    if src == "json":
+        if not cfg.acoustic_state_json:
+            raise ValueError("cfg.acoustic_state_json is required when acoustic_param_source='json'")
+        return load_acoustic_state_json(cfg, cfg.acoustic_state_json)
+
+    if not cfg.pulse_recording:
+        raise ValueError("cfg.pulse_recording is required when acoustic_param_source='invert'")
+    state = invert_acoustic_state(cfg, pulse_recording=cfg.pulse_recording)
+    if bool(cfg.save_state_json_after_invert) and cfg.acoustic_state_json:
+        save_acoustic_state_json(state, cfg.acoustic_state_json)
+    return state
+
+
 def generate_rir_from_state(cfg: RIRSimSEConfig, state, seed=None):
     """
     Step-2: generate one full RIR + two refs from inversion state.
@@ -168,13 +250,13 @@ def prepare_rir_sim_se_state(cfg: RIRSimSEConfig, pulse_recording):
 
 def run_rir_sim_se(cfg: RIRSimSEConfig, pulse_recording=None, state=None, seed=None):
     if state is None:
-        if pulse_recording is None:
-            raise ValueError("Either `state` or `pulse_recording` must be provided.")
-        state = invert_acoustic_state(cfg, pulse_recording)
+        if pulse_recording is not None:
+            state = invert_acoustic_state(cfg, pulse_recording)
+        else:
+            state = prepare_state_from_cfg(cfg)
     return generate_rir_from_state(cfg, state=state, seed=seed)
 
 
 def clear_rir_sim_se_state_cache():
     # Cache removed for simpler pipeline.
     return None
-
