@@ -27,6 +27,10 @@ Key physical fields:
 - `material_scattering_curve`
 - `material_face_absorption_scale`
 - `material_face_scattering_scale`
+- `mode_fmin_hz`
+- `mode_fmax_hz`
+- `mode_n_min` / `mode_n_max`
+- `mode_rel_db_min` / `mode_rel_db_max`
 
 These are applied inside the RIR generation strategy (absorption/scattering coefficients),
 not as post-hoc low/high-band gain fixes.

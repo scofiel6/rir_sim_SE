@@ -99,6 +99,14 @@ class RIRSimSEConfig:
         "west": 1.00, "east": 1.00, "south": 1.00, "north": 1.00, "floor": 1.00, "ceiling": 1.00
     })
 
+    # Low-frequency modal tail controls (fed into im_rir_v2 core).
+    mode_fmin_hz: float = 40.0
+    mode_fmax_hz: float = 800.0
+    mode_n_min: int = 3
+    mode_n_max: int = 8
+    mode_rel_db_min: float = -38.0
+    mode_rel_db_max: float = -30.0
+
     # Optional device EQ on generated RIR/ref outputs.
     # Default is flat (all 0 dB), so it does not alter signals.
     device_eq_enable: bool = True
@@ -137,6 +145,13 @@ class RIRSimSEConfig:
         ):
             if k in d:
                 d[k] = tuple(float(v) for v in list(d[k]))
+
+        for k in ("mode_fmin_hz", "mode_fmax_hz", "mode_rel_db_min", "mode_rel_db_max"):
+            if k in d:
+                d[k] = float(d[k])
+        for k in ("mode_n_min", "mode_n_max"):
+            if k in d:
+                d[k] = int(float(d[k]))
 
         if "material_face_absorption_scale" in d:
             d["material_face_absorption_scale"] = _normalize_scale_dict(d["material_face_absorption_scale"])

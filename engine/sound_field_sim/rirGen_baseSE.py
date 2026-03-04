@@ -158,6 +158,13 @@ class BaseSERIRGenerator:
         self.material_face_scattering_scale = {
             "west": 1.0, "east": 1.0, "south": 1.0, "north": 1.0, "floor": 1.0, "ceiling": 1.0
         }
+        # Low-frequency modal controls (overridden from cfg).
+        self.mode_fmin_hz = 40.0
+        self.mode_fmax_hz = 800.0
+        self.mode_n_min = 3
+        self.mode_n_max = 8
+        self.mode_rel_db_min = -38.0
+        self.mode_rel_db_max = -30.0
 
         # Updated by fit_from_recordings(...)
         self.fitted = None
@@ -1409,6 +1416,21 @@ class BaseSERIRGenerator:
         fc = self._jitter_band_centers(rng)
         band_rt60 = self._sample_band_rt60(rt60_tgt, rng, band_prior=band_prior)
         params = self._apply_band_profile_to_params(params, room_size, fc, band_rt60, rng)
+        # Modal tail controls are runtime-configurable via cfg and injected into
+        # engine params to avoid hard-coded core behavior.
+        if isinstance(params, dict):
+            n_min = int(getattr(self, "mode_n_min", 3))
+            n_max = int(getattr(self, "mode_n_max", 8))
+            if n_max < n_min:
+                n_min, n_max = n_max, n_min
+            rel_lo = float(getattr(self, "mode_rel_db_min", -38.0))
+            rel_hi = float(getattr(self, "mode_rel_db_max", -30.0))
+            if rel_hi < rel_lo:
+                rel_lo, rel_hi = rel_hi, rel_lo
+            params["mode_fmin_hz"] = float(getattr(self, "mode_fmin_hz", 40.0))
+            params["mode_fmax_hz"] = float(getattr(self, "mode_fmax_hz", 800.0))
+            params["mode_n_range"] = [int(n_min), int(n_max)]
+            params["mode_rel_db_range"] = [float(rel_lo), float(rel_hi)]
 
         n = clean.shape[0]
         n_ch = mic_loc.shape[1]

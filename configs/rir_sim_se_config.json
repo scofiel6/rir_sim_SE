@@ -3,7 +3,7 @@
   "seed": 2026,
   "use_drr_c50": true,
   "room_size_hint": [3.6, 3.8, 2.7],
-  "room_jitter_ratio": 0.04,
+  "room_jitter_ratio": 0.06,
   "custom_room_range": null,
   "generic_room_range": null,
   "out_dir": "./_out_rir_sim_se",
@@ -44,13 +44,19 @@
     "floor": 1.0,
     "ceiling": 1.0
   },
+  "mode_fmin_hz": 40.0,
+  "mode_fmax_hz": 800.0,
+  "mode_n_min": 4,
+  "mode_n_max": 12,
+  "mode_rel_db_min": -38.0,
+  "mode_rel_db_max": -30.0,
 
   "device_eq_enable": true,
   "device_eq_centers_hz": [63, 125, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000],
   "device_eq_gains_db": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 
   "mic_array_type": "linear",
-  "mic_num": 4,
+  "mic_num": 1,
   "mic_spacing": 0.04,
   "mic_radius": 0.04,
   "mic_position_jitter_m": 0.001

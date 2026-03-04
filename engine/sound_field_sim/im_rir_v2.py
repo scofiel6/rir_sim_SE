@@ -373,15 +373,30 @@ def simulate_rir_with_params(
     tail *= time_decay
     tail = apply_highpass(tail, fs, cutoff=40)
 
+    mode_fmin = float(params.get("mode_fmin_hz", 40.0)) if isinstance(params, dict) else 40.0
+    mode_fmax = float(params.get("mode_fmax_hz", 800.0)) if isinstance(params, dict) else 800.0
+    mode_n_range = params.get("mode_n_range", [3, 8]) if isinstance(params, dict) else [3, 8]
+    mode_rel_db_range = params.get("mode_rel_db_range", [-38.0, -30.0]) if isinstance(params, dict) else [-38.0, -30.0]
+    if not isinstance(mode_n_range, (list, tuple)) or len(mode_n_range) < 2:
+        mode_n_range = [3, 8]
+    if not isinstance(mode_rel_db_range, (list, tuple)) or len(mode_rel_db_range) < 2:
+        mode_rel_db_range = [-38.0, -30.0]
+    n0, n1 = int(mode_n_range[0]), int(mode_n_range[1])
+    if n1 < n0:
+        n0, n1 = n1, n0
+    r0, r1 = float(mode_rel_db_range[0]), float(mode_rel_db_range[1])
+    if r1 < r0:
+        r0, r1 = r1, r0
+
     tail, mode_meta = add_low_freq_modes(
         tail,
         fs,
         room_dim=(lx, ly, lz),
         rt60=RT60_target,
-        fmin=40,
-        fmax=200,
-        n_modes_range=(3, 8),
-        rel_db_range=(-38, -30),
+        fmin=float(mode_fmin),
+        fmax=float(mode_fmax),
+        n_modes_range=(int(n0), int(n1)),
+        rel_db_range=(float(r0), float(r1)),
         rng=rng,
         return_meta=True,
     )

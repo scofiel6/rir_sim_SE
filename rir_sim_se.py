@@ -64,6 +64,38 @@ def _to_jsonable(x):
     return x
 
 
+def _compact_fit_for_state(fit):
+    """
+    Keep only parameters needed for downstream generation/repro and
+    drop verbose per-item diagnostics.
+    """
+    if not isinstance(fit, dict):
+        return {}
+    keep_keys = [
+        "target_fs",
+        "recording_fs_min_max",
+        "n_input",
+        "n_used_rt60",
+        "rt60_median",
+        "rt60_p20",
+        "rt60_p80",
+        "rt60_band_median",
+        "band_centers_ref",
+        "drr_db_p20_p80",
+        "c50_db_p20_p80",
+        "noise_rms_median",
+        "noise_tilt_db_per_oct_median",
+        "fitted_custom_room_range",
+        "drr_c50_mode_requested",
+        "drr_c50_mode_effective",
+    ]
+    out = {}
+    for k in keep_keys:
+        if k in fit:
+            out[k] = fit[k]
+    return out
+
+
 def _build_eq_magnitude_curve(fs, n_fft, centers_hz, gains_db):
     fs = int(fs)
     n_fft = int(n_fft)
@@ -200,9 +232,10 @@ def save_acoustic_state_json(state, json_path):
     fit = state.get("fit")
     if not isinstance(fit, dict):
         raise ValueError("state['fit'] must be a dict")
+    fit_compact = _compact_fit_for_state(fit)
     payload = {
         "schema_version": 1,
-        "fit": _to_jsonable(fit),
+        "fit": _to_jsonable(fit_compact),
         "pulse_recording": state.get("pulse_recording"),
     }
     p = Path(json_path)

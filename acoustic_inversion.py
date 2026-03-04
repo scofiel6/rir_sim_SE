@@ -89,6 +89,12 @@ def create_generator(cfg: RIRSimSEConfig):
     gen.material_scattering_curve = np.asarray(cfg.material_scattering_curve, dtype=np.float64)
     gen.material_face_absorption_scale = dict(cfg.material_face_absorption_scale)
     gen.material_face_scattering_scale = dict(cfg.material_face_scattering_scale)
+    gen.mode_fmin_hz = float(cfg.mode_fmin_hz)
+    gen.mode_fmax_hz = float(cfg.mode_fmax_hz)
+    gen.mode_n_min = int(cfg.mode_n_min)
+    gen.mode_n_max = int(cfg.mode_n_max)
+    gen.mode_rel_db_min = float(cfg.mode_rel_db_min)
+    gen.mode_rel_db_max = float(cfg.mode_rel_db_max)
     return gen
 
 
