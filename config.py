@@ -66,6 +66,13 @@ def _to_float_tuple(x, fallback):
     return tuple(float(v) for v in list(x))
 
 
+def _to_optional_float_tuple(x):
+    if x is None:
+        return None
+    vals = tuple(float(v) for v in list(x))
+    return vals if len(vals) > 0 else None
+
+
 def _normalize_room_range(x):
     if x is None:
         return None
@@ -211,6 +218,7 @@ class RIRSimSEConfig:
     # Array settings.
     mic_array_type: str = "linear"
     mic_num: int = 4
+    mic_positions_m: Optional[Tuple[float, ...]] = None
     mic_spacing: float = 0.04
     mic_radius: float = 0.04
     mic_position_jitter_m: float = 0.001
@@ -234,6 +242,8 @@ class RIRSimSEConfig:
         ):
             if k in d:
                 d[k] = tuple(float(v) for v in list(d[k]))
+        if "mic_positions_m" in d:
+            d["mic_positions_m"] = _to_optional_float_tuple(d["mic_positions_m"])
 
         for k in ("sound_speed_m_s", "late_tail_highpass_hz", "mode_fmin_hz", "mode_fmax_hz", "mode_rel_db_min", "mode_rel_db_max"):
             if k in d:

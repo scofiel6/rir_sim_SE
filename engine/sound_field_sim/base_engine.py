@@ -1735,18 +1735,6 @@ class BaseEngine:
             float(np.clip(max(c50_range), -2.0, 20.0)),
         )
 
-        if room_size_hint is not None:
-            room_size_hint = np.asarray(room_size_hint, dtype=np.float64).reshape(3)
-            j = max(0.0, float(room_jitter_ratio))
-            lx, ly, lz = room_size_hint.tolist()
-            fitted_room = {
-                "lx": (max(1.5, lx * (1.0 - j)), max(1.55, lx * (1.0 + j))),
-                "ly": (max(1.5, ly * (1.0 - j)), max(1.55, ly * (1.0 + j))),
-                "lz": (max(2.0, lz * (1.0 - j)), max(2.05, lz * (1.0 + j))),
-            }
-        else:
-            fitted_room = dict(self.custom_room_range)
-
         n_used_items = int(np.count_nonzero([bool(p.get("used", False)) for p in per_item]))
         n_from_recording = int(np.count_nonzero([bool(p.get("drr_c50_from_recording", False)) for p in per_item]))
         if drr_c50_mode == "fixed":
@@ -1794,14 +1782,12 @@ class BaseEngine:
             "warnings": warnings,
             "noise_rms_median": float(np.median(np.asarray(noise_rms_vals, dtype=np.float64))),
             "noise_tilt_db_per_oct_median": float(np.median(np.asarray(noise_tilt_vals, dtype=np.float64))) if len(noise_tilt_vals) > 0 else 0.0,
-            "fitted_custom_room_range": fitted_room,
             "per_item": per_item,
         }
 
         # Write inferred priors back to generator so subsequent generate
         # uses room-specific distributions instead of generic defaults.
         if update_generator:
-            self.custom_room_range = fitted_room
             self.custom_rt60_range = (rt20, rt80)
             self.custom_rt60_center = rt50
             self.custom_band_rt60_prior = band_prior

@@ -16,14 +16,19 @@ def _build_mic_info(cfg: RIRSimSEConfig):
             "mic_radius": float(max(0.01, cfg.mic_radius)),
         }
 
-    spacing = float(max(0.005, cfg.mic_spacing))
-    pos = np.arange(n, dtype=np.float64) * spacing
-    pos = pos - float(np.mean(pos))
+    if cfg.mic_positions_m is not None and len(cfg.mic_positions_m) > 0:
+        # Explicit linear geometry from cfg takes priority over uniform spacing.
+        pos = np.asarray(cfg.mic_positions_m, dtype=np.float64).reshape(-1)
+        pos = pos - float(np.min(pos))
+        n = int(pos.shape[0])
+    else:
+        spacing = float(max(0.005, cfg.mic_spacing))
+        pos = np.arange(n, dtype=np.float64) * spacing
+        pos = pos - float(np.mean(pos))
     jitter = float(max(0.0, cfg.mic_position_jitter_m))
     if jitter > 0.0:
         rng = np.random.default_rng(int(cfg.seed) + 11)
         pos = pos + rng.normal(0.0, jitter, size=pos.shape[0])
-    pos = np.sort(pos)
     return {
         "device_id": f"linear_{n}ch",
         "device_height": 1.2,
@@ -125,7 +130,9 @@ def apply_fit_to_generator(gen, fit):
     if not isinstance(fit, dict):
         return gen
 
-    room = fit.get("fitted_custom_room_range")
+    # Room-size prior comes from cfg by default. Only override it when a
+    # future geometry inversion stage provides an actual estimate.
+    room = fit.get("estimated_room_range")
     if isinstance(room, dict):
         gen.custom_room_range = room
 

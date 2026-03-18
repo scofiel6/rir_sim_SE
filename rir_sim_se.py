@@ -130,7 +130,7 @@ def _compact_fit_for_state(fit):
         "c50_db_p20_p80",
         "noise_rms_median",
         "noise_tilt_db_per_oct_median",
-        "fitted_custom_room_range",
+        "estimated_room_range",
         "drr_c50_mode_requested",
         "drr_c50_mode_effective",
         "inversion_stage1",
@@ -306,6 +306,8 @@ def save_acoustic_state_json(state, json_path):
 def load_acoustic_state_json(cfg: RIRSimSEConfig, json_path):
     """
     Load inversion result from json and rebuild generator from fitted params.
+    Room-size prior is resolved from cfg unless an explicit estimated room
+    range is present in the saved fit.
     """
     p = Path(json_path)
     if not p.exists():

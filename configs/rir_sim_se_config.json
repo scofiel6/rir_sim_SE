@@ -104,9 +104,13 @@
   "device_eq_centers_hz": [63, 125, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000],
   "device_eq_gains_db": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 
+  // Array geometry.
+  // For linear arrays, mic_positions_m takes priority over mic_num/mic_spacing.
+  // Example: [0.0, 0.04, 0.36, 0.40] describes a 4-ch non-uniform linear array.
   "mic_array_type": "linear",
-  "mic_num": 1,
+  "mic_num": 4,
+  "mic_positions_m": [0.0, 0.04, 0.36, 0.40],
   "mic_spacing": 0.04,
   "mic_radius": 0.04,
-  "mic_position_jitter_m": 0.001
+  "mic_position_jitter_m": 0.0
 }

@@ -119,7 +119,7 @@ Important config groups:
 - Output device EQ:
   `device_eq_enable`, `device_eq_centers_hz`, `device_eq_gains_db`
 - Array geometry:
-  `mic_array_type`, `mic_num`, `mic_spacing`, `mic_radius`, `mic_position_jitter_m`
+  `mic_array_type`, `mic_positions_m`, `mic_num`, `mic_spacing`, `mic_radius`, `mic_position_jitter_m`
 
 ## Install
 
