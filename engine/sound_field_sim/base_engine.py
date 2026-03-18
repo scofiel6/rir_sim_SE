@@ -1,73 +1,339 @@
 ﻿import json
 from pathlib import Path
-from math import gcd
-
 import numpy as np
 import pyroomacoustics as pra
 import soundfile as sf
+from pyroomacoustics.directivities import Cardioid, DirectionVector
 from scipy.interpolate import interp1d
-from scipy.signal import butter, fftconvolve, sosfilt, resample_poly
+from scipy.signal import butter, fftconvolve, sosfilt
 
-import im_rir_v2 as imv2
+from utils import to_mono
 
 
-def _resample_poly_1d(x, fs_in, fs_out, allow_upsample=False):
-    x = np.asarray(x, dtype=np.float64).reshape(-1)
-    fs_in = int(round(float(fs_in)))
-    fs_out = int(round(float(fs_out)))
-    if fs_in <= 0 or fs_out <= 0:
-        raise ValueError(f"Invalid sample rates: fs_in={fs_in}, fs_out={fs_out}")
-    if fs_in == fs_out:
-        return x
-    if (fs_out > fs_in) and (not allow_upsample):
-        raise ValueError(
-            f"Upsampling is disabled by default: {fs_in} -> {fs_out}. "
-            "Use a source with fs >= target fs or explicitly allow upsampling."
+C = 343
+
+
+def add_low_freq_modes(
+    tail,
+    fs,
+    room_dim,
+    rt60,
+    fmin=40,
+    fmax=200,
+    n_modes_range=(3, 8),
+    rel_db_range=(-25, -15),
+    c=343.0,
+    rng=None,
+    return_meta=False,
+):
+    lx, ly, lz = room_dim
+    n_samples = len(tail)
+    t = np.arange(n_samples) / fs
+
+    cand = []
+    for room_len in (lx, ly, lz):
+        n_max = int(np.floor(2 * fmax * room_len / c))
+        for n in range(1, max(2, n_max + 1)):
+            freq = (c / 2.0) * (n / room_len)
+            if fmin <= freq <= fmax:
+                cand.append(freq)
+
+    cand = np.array(sorted(set(cand)))
+    if cand.size == 0:
+        meta = {"mode_freqs_hz": [], "mode_taus_s": [], "mode_rel_db": None}
+        return (tail, meta) if return_meta else tail
+
+    rng = np.random.default_rng(0) if rng is None else rng
+    k = min(int(rng.integers(n_modes_range[0], n_modes_range[1] + 1)), cand.size)
+    fk = rng.choice(cand, size=k, replace=False)
+    fk = fk * rng.uniform(0.98, 1.02, size=k)
+
+    modes = np.zeros_like(tail, dtype=np.float64)
+    mode_taus = []
+    for freq in fk:
+        phi = rng.uniform(0, 2 * np.pi)
+        tau = rt60 * rng.uniform(0.4, 1.2)
+        tau *= (120.0 / max(freq, 60.0)) ** 0.2
+        mode_taus.append(float(tau))
+        modes += np.exp(-t / max(tau, 1e-3)) * np.sin(2 * np.pi * freq * t + phi)
+
+    rms_tail = np.sqrt(np.mean(tail**2) + 1e-12)
+    modes /= np.sqrt(np.mean(modes**2) + 1e-12)
+    rel_db = rng.uniform(rel_db_range[0], rel_db_range[1])
+    modes *= rms_tail * (10.0 ** (rel_db / 20.0))
+
+    out = tail + modes
+    meta = {
+        "mode_freqs_hz": [float(v) for v in np.asarray(fk, dtype=np.float64).tolist()],
+        "mode_taus_s": mode_taus,
+        "mode_rel_db": float(rel_db),
+    }
+    return (out, meta) if return_meta else out
+
+
+def generate_velvet_noise(length, fs, density=2000, rng=None):
+    rng = np.random.default_rng(0) if rng is None else rng
+    length = int(max(0, length))
+    density = float(max(1e-6, density))
+    velvet = np.zeros(length, dtype=np.float64)
+    grid_size = max(1, int(fs / density))
+    n_pulses = length // grid_size
+    for i in range(n_pulses):
+        pos = i * grid_size + rng.integers(0, grid_size)
+        if pos < length:
+            velvet[pos] = rng.choice([-1, 1])
+    return velvet
+
+
+def apply_highpass(sig, fs, cutoff=40):
+    sos = butter(4, cutoff, "hp", fs=fs, output="sos")
+    return sosfilt(sos, sig)
+
+
+def _tail_decay_shape_from_alpha(alpha_f):
+    alpha = np.clip(np.asarray(alpha_f, dtype=np.float64), 0.02, 0.99)
+    shape = np.sqrt(np.clip(1.0 - alpha, 1e-4, 1.0))
+    return shape / max(float(np.mean(shape)), 1e-8)
+
+
+class SoftCardioid(Cardioid):
+    def __init__(self, orientation, alpha=0.3, gain=1.0):
+        super().__init__(orientation, gain=gain)
+        self.alpha = alpha
+
+    def evaluate(self, direction):
+        base = super().evaluate(direction)
+        return self.alpha + (1 - self.alpha) * base
+
+
+MATERIAL_LIBRARY = {
+    "painted_wall": {
+        "absorption": [0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
+        "scattering": [0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22],
+    },
+    "gypsum_board": {
+        "absorption": [0.10, 0.10, 0.08, 0.07, 0.06, 0.05, 0.05],
+        "scattering": [0.08, 0.10, 0.12, 0.14, 0.16, 0.18, 0.20],
+    },
+    "concrete": {
+        "absorption": [0.01, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02],
+        "scattering": [0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16],
+    },
+    "glass": {
+        "absorption": [0.03, 0.03, 0.03, 0.04, 0.05, 0.06, 0.06],
+        "scattering": [0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
+    },
+    "curtain_heavy": {
+        "absorption": [0.15, 0.25, 0.40, 0.55, 0.65, 0.70, 0.72],
+        "scattering": [0.12, 0.14, 0.16, 0.20, 0.24, 0.30, 0.36],
+    },
+    "carpet_floor": {
+        "absorption": [0.08, 0.12, 0.20, 0.30, 0.40, 0.50, 0.55],
+        "scattering": [0.10, 0.14, 0.18, 0.22, 0.26, 0.32, 0.36],
+    },
+    "wood_floor": {
+        "absorption": [0.05, 0.06, 0.08, 0.10, 0.11, 0.12, 0.12],
+        "scattering": [0.08, 0.10, 0.12, 0.16, 0.20, 0.24, 0.28],
+    },
+    "acoustic_tile_ceiling": {
+        "absorption": [0.30, 0.45, 0.65, 0.75, 0.75, 0.70, 0.65],
+        "scattering": [0.18, 0.22, 0.28, 0.34, 0.38, 0.40, 0.42],
+    },
+    "plaster_ceiling": {
+        "absorption": [0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16],
+        "scattering": [0.10, 0.12, 0.14, 0.18, 0.22, 0.26, 0.30],
+    },
+}
+
+
+def _weighted_scattering_scalar(scattering_curve, center_freqs):
+    s = np.asarray(scattering_curve, dtype=np.float64)
+    f = np.asarray(center_freqs, dtype=np.float64)
+    w = np.sqrt(np.maximum(f, 1.0) / np.maximum(np.min(f), 1.0))
+    return float(np.clip(np.average(s, weights=w), 0.05, 0.95))
+
+
+def _sample_face_categories(rng):
+    wall_candidates = ["painted_wall", "gypsum_board", "concrete", "glass", "curtain_heavy"]
+    floor_candidates = ["carpet_floor", "wood_floor"]
+    ceil_candidates = ["acoustic_tile_ceiling", "plaster_ceiling"]
+    return {
+        "west": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
+        "east": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
+        "south": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
+        "north": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
+        "floor": floor_candidates[int(rng.integers(0, len(floor_candidates)))],
+        "ceiling": ceil_candidates[int(rng.integers(0, len(ceil_candidates)))],
+    }
+
+
+def _build_materials_from_library(center_freqs, alpha_mean, face_categories, rng):
+    materials = {}
+    trace = {}
+    coeff_stack = []
+    for face, cat in face_categories.items():
+        base = MATERIAL_LIBRARY[cat]
+        abs_base = np.asarray(base["absorption"], dtype=np.float64)
+        scat_base = np.asarray(base["scattering"], dtype=np.float64)
+
+        shape = abs_base / max(float(np.mean(abs_base)), 1e-6)
+        coeffs = np.clip(
+            alpha_mean * shape * rng.uniform(0.92, 1.08, size=abs_base.shape[0]) * float(rng.uniform(0.90, 1.10)),
+            0.01,
+            0.98,
         )
-    g = gcd(fs_out, fs_in)
-    up = fs_out // g
-    down = fs_in // g
-    y = resample_poly(x, up, down).astype(np.float64)
-    return np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+        scat_curve = np.clip(scat_base * rng.uniform(0.90, 1.10, size=scat_base.shape[0]), 0.05, 0.98)
+        scat_scalar = _weighted_scattering_scalar(scat_curve, center_freqs)
 
-def _call_sample_room_params(imv2_mod, lx, ly, lz, fs, rng, rt60_tgt):
-    if not hasattr(imv2_mod, "sample_room_params"):
-        raise AttributeError("im_rir_v2 has no sample_room_params")
-    return imv2_mod.sample_room_params(
-        float(lx),
-        float(ly),
-        float(lz),
-        fs=int(fs),
+        materials[face] = pra.Material(
+            {"coeffs": coeffs, "scattering": scat_scalar, "center_freqs": center_freqs}
+        )
+        trace[face] = {
+            "category": cat,
+            "absorption_coeffs": coeffs.tolist(),
+            "scattering_curve": scat_curve.tolist(),
+            "scattering_scalar": float(scat_scalar),
+        }
+        coeff_stack.append(coeffs)
+
+    return materials, trace, np.mean(np.stack(coeff_stack, axis=0), axis=0)
+
+
+def _sample_common_room_params(lx, ly, lz, fs, rng, rt60_target):
+    center_freqs = np.array([125, 250, 500, 1000, 2000, 4000, 8000], dtype=np.float64)
+    room_dim = [float(lx), float(ly), float(lz)]
+    rt60_value = float(rng.uniform(0.1, 1.0) if rt60_target is None else rt60_target)
+
+    volume = float(lx * ly * lz)
+    surface = float(2.0 * (lx * ly + lx * lz + ly * lz))
+    alpha_mean = float(np.clip(0.161 * volume / max(surface * rt60_value, 1e-6), 0.03, 0.75))
+
+    face_categories = _sample_face_categories(rng)
+    materials, material_trace, alpha_bar = _build_materials_from_library(
+        center_freqs=center_freqs,
+        alpha_mean=alpha_mean,
+        face_categories=face_categories,
         rng=rng,
-        rt60_target=float(rt60_tgt),
+    )
+    alpha_continuous = interp1d(np.log(center_freqs), alpha_bar, kind="linear", fill_value="extrapolate")
+    max_order = int(np.clip(np.ceil(C * float(rng.uniform(0.06, 0.12)) / max(min(room_dim), 1e-6)), 5, 40))
+
+    return {
+        "room_dim": room_dim,
+        "RT60_target": rt60_value,
+        "center_freqs": center_freqs,
+        "alpha_continuous": alpha_continuous,
+        "materials": materials,
+        "material_trace": material_trace,
+        "face_categories": face_categories,
+        "max_order": max_order,
+    }
+
+
+def sample_room_params(lx, ly, lz, fs=32000, rng=None, rt60_target=None):
+    rng = np.random.default_rng(0) if rng is None else rng
+    return _sample_common_room_params(
+        lx=lx,
+        ly=ly,
+        lz=lz,
+        fs=fs,
+        rng=rng,
+        rt60_target=rt60_target,
     )
 
 
-def _call_simulate_rir(imv2_mod, *, mic_xyz, src_xyz, doa_deg, lx, ly, lz, fs, params, rng):
-    if not hasattr(imv2_mod, "simulate_rir_with_params"):
-        raise AttributeError("im_rir_v2 has no simulate_rir_with_params")
+def simulate_rir_with_params(
+    mic_xyz,
+    src_xyz,
+    angle_offset,
+    lx,
+    ly,
+    lz,
+    fs,
+    params,
+    rng=None,
+):
+    rng = np.random.default_rng(0) if rng is None else rng
+    rt60_target = params["RT60_target"]
+    alpha_continuous = params["alpha_continuous"]
 
-    out = imv2_mod.simulate_rir_with_params(
-        mic_xyz=np.asarray(mic_xyz, dtype=np.float64),
-        src_xyz=np.asarray(src_xyz, dtype=np.float64),
-        angle_offset=float(doa_deg),
-        lx=float(lx),
-        ly=float(ly),
-        lz=float(lz),
-        fs=int(fs),
-        params=params,
-        rng=rng,
+    room = pra.ShoeBox(
+        [lx, ly, lz],
+        fs=fs,
+        materials=params["materials"],
+        max_order=int(params["max_order"]),
+        use_rand_ism=True,
+        air_absorption=True,
+    )
+    azimuth = np.deg2rad(angle_offset)
+    orientation = DirectionVector(azimuth, np.pi / 2, degrees=False)
+    room.add_source(list(src_xyz), signal=None, directivity=SoftCardioid(orientation, alpha=0.7))
+    room.add_microphone_array(np.array(mic_xyz, dtype=np.float64).reshape(3, 1))
+    room.compute_rir()
+    rir_ism = np.asarray(room.rir[0][0], dtype=np.float64)
+
+    f_sch = 2000.0 * np.sqrt(max(rt60_target, 1e-3) / max(lx * ly * lz, 1e-3))
+    t_split = np.clip(3.0 / max(f_sch, 50.0), 0.05, 0.12)
+    fade_len = int(0.02 * fs)
+    split_idx = int(np.clip(int(t_split * fs), fade_len + 1, len(rir_ism)))
+    early = rir_ism[:split_idx]
+
+    jitter = int(rng.uniform(0.2e-3, 0.8e-3) * fs)
+    if jitter >= 2:
+        early = np.convolve(early, rng.standard_normal(jitter) * 0.05, mode="same")
+    early_f = np.fft.rfft(early)
+    early = np.fft.irfft(
+        early_f * np.exp(1j * rng.uniform(-0.1, 0.1, size=early_f.shape)),
+        n=len(early),
     )
 
-    if isinstance(out, tuple):
-        rir = out[0]
-        rt60 = out[1] if len(out) > 1 else None
-    else:
-        rir, rt60 = out, None
-    return np.asarray(rir, dtype=np.float64).reshape(-1), rt60
+    tail_len = max(int(rt60_target * fs * 1.1), len(rir_ism) - split_idx)
+    noise_density = float(rng.uniform(8000, max(8001.0, 0.98 * fs)))
+    noise = generate_velvet_noise(tail_len, fs, density=noise_density, rng=rng)
+
+    noise_f = np.fft.rfft(noise)
+    freqs = np.fft.rfftfreq(len(noise), 1 / fs)
+    alpha_f = np.clip(alpha_continuous(np.log(np.clip(freqs, 50, fs / 2))), 0.02, 0.99)
+    tail = np.fft.irfft(noise_f * _tail_decay_shape_from_alpha(alpha_f), n=len(noise))
+    tail *= np.exp(-6.9 * np.arange(len(noise)) / (rt60_target * fs))
+    tail = apply_highpass(tail, fs, cutoff=40)
+
+    mode_n_range = params.get("mode_n_range", [3, 8])
+    mode_rel_db_range = params.get("mode_rel_db_range", [-38.0, -30.0])
+    n0, n1 = sorted((int(mode_n_range[0]), int(mode_n_range[1])))
+    r0, r1 = sorted((float(mode_rel_db_range[0]), float(mode_rel_db_range[1])))
+    tail, mode_meta = add_low_freq_modes(
+        tail,
+        fs,
+        room_dim=(lx, ly, lz),
+        rt60=rt60_target,
+        fmin=float(params.get("mode_fmin_hz", 40.0)),
+        fmax=float(params.get("mode_fmax_hz", 800.0)),
+        n_modes_range=(n0, n1),
+        rel_db_range=(r0, r1),
+        rng=rng,
+        return_meta=True,
+    )
+
+    w = np.linspace(0, 1, fade_len, endpoint=False)
+    a0 = split_idx - fade_len
+    tail *= np.sqrt(np.mean(early[a0:split_idx] ** 2) + 1e-12) / np.sqrt(np.mean(tail[:fade_len] ** 2) + 1e-12)
+    rir = np.concatenate([early[:a0], early[a0:split_idx] * (1 - w) + tail[:fade_len] * w, tail[fade_len:]])
+
+    params["_trace_last"] = {
+        "engine_variant": "vector",
+        "split_idx": int(split_idx),
+        "split_time_ms": float(1000.0 * split_idx / fs),
+        "fade_len": int(fade_len),
+        "tail_len": int(tail_len),
+        "noise_density": float(noise_density),
+        "max_order": int(params.get("max_order", -1)),
+        "mode_meta": mode_meta,
+    }
+    return rir, rt60_target
 
 
-class BaseSERIRGenerator:
+class BaseEngine:
     """
     SE-oriented RIR generator with:
     1) room-custom + generic mixed sampling,
@@ -196,47 +462,6 @@ class BaseSERIRGenerator:
             return list(items)
         raise TypeError(f"{name} must be path or list/tuple, got {type(items)}")
 
-    def _to_mono(self, x):
-        x = np.asarray(x, dtype=np.float64)
-        if x.ndim == 1:
-            return x
-        if x.ndim == 2:
-            return np.mean(x, axis=1)
-        raise ValueError(f"Unsupported audio shape: {x.shape}")
-
-    def _resample_to_fs(self, x, fs_in, allow_upsample=False):
-        fs_in = int(round(float(fs_in)))
-        if fs_in == self.fs:
-            return np.asarray(x, dtype=np.float64)
-        if fs_in <= 0:
-            raise ValueError(f"Invalid fs_in: {fs_in}")
-        return _resample_poly_1d(
-            np.asarray(x, dtype=np.float64),
-            fs_in=fs_in,
-            fs_out=self.fs,
-            allow_upsample=allow_upsample,
-        )
-
-    def _load_audio_mono(self, item):
-        if isinstance(item, np.ndarray):
-            x = self._to_mono(item)
-            return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0), "<ndarray>"
-        if isinstance(item, dict):
-            x = self._to_mono(item["audio"])
-            fs_in = int(item.get("fs", self.fs))
-            x = self._resample_to_fs(x, fs_in)
-            x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-            return x, str(item.get("id", item.get("path", "<dict-audio>")))
-        if isinstance(item, (str, Path)):
-            path = str(item)
-            # Read audio from file path. This is the actual disk I/O entry point.
-            x, fs_in = sf.read(path, dtype="float64")
-            x = self._to_mono(x)
-            x = self._resample_to_fs(x, fs_in)
-            x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-            return x, path
-        raise TypeError(f"Unsupported audio item type: {type(item)}")
-
     def _load_audio_mono_keep_fs(self, item):
         """
         Load mono audio but keep original sampling rate.
@@ -245,40 +470,21 @@ class BaseSERIRGenerator:
         characteristics by resampling before estimation.
         """
         if isinstance(item, np.ndarray):
-            x = self._to_mono(item)
+            x = to_mono(item)
             x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
             return x, int(self.fs), "<ndarray>"
         if isinstance(item, dict):
-            x = self._to_mono(item["audio"])
+            x = to_mono(item["audio"])
             fs_in = int(item.get("fs", self.fs))
             x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
             return x, fs_in, str(item.get("id", item.get("path", "<dict-audio>")))
         if isinstance(item, (str, Path)):
             path = str(item)
             x, fs_in = sf.read(path, dtype="float64")
-            x = self._to_mono(x)
+            x = to_mono(x)
             x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
             return x, int(round(float(fs_in))), path
         raise TypeError(f"Unsupported audio item type: {type(item)}")
-
-    def _crop_or_pad(self, x, target_len, rng, tile_short=False):
-        x = np.asarray(x, dtype=np.float64)
-        n = len(x)
-        if target_len <= 0:
-            raise ValueError(f"target_len must be positive, got {target_len}")
-        if n == target_len:
-            return x.copy()
-        if n > target_len:
-            s = int(rng.integers(0, n - target_len + 1))
-            return x[s:s + target_len].copy()
-        if n == 0:
-            return np.zeros(target_len, dtype=np.float64)
-        if tile_short:
-            reps = int(np.ceil(target_len / n))
-            return np.tile(x, reps)[:target_len].astype(np.float64)
-        out = np.zeros(target_len, dtype=np.float64)
-        out[:n] = x
-        return out
 
     @staticmethod
     def _max_dist_to_walls(center_xy, dir_xy, room_size, margin):
@@ -497,7 +703,7 @@ class BaseSERIRGenerator:
                 s_curve = np.full(c0.shape, float(np.mean(s_raw)) if s_raw.size > 0 else 0.35, dtype=np.float64)
             else:
                 s_curve = s_raw
-        s_base = BaseSERIRGenerator._weighted_scattering_scalar(s_curve, fc)
+        s_base = BaseEngine._weighted_scattering_scalar(s_curve, fc)
 
         abs_scale_map = dict(face_abs_scale or {})
         scat_scale_map = dict(face_scat_scale or {})
@@ -577,7 +783,7 @@ class BaseSERIRGenerator:
 
     def _direct_ref(self, src_xyz, mic_xyz, n_samples):
         dist = float(np.linalg.norm(np.asarray(src_xyz) - np.asarray(mic_xyz)))
-        delay_samp = int(round(dist / imv2.C * self.fs))
+        delay_samp = int(round(dist / C * self.fs))
         ref = np.zeros(n_samples, dtype=np.float64)
         if delay_samp < n_samples:
             ref[delay_samp] = 1.0 / max(dist, 1e-3)
@@ -1203,7 +1409,13 @@ class BaseSERIRGenerator:
         if len(band_rt60_vals) > 0:
             band_mat = np.asarray(band_rt60_vals, dtype=np.float64)
             if np.any(np.isfinite(band_mat)):
-                band_prior = np.nanmedian(band_mat, axis=0)
+                med = np.full(band_mat.shape[1], np.nan, dtype=np.float64)
+                for i in range(band_mat.shape[1]):
+                    col = band_mat[:, i]
+                    col = col[np.isfinite(col)]
+                    if col.size > 0:
+                        med[i] = float(np.median(col))
+                band_prior = med
             valid_idx = np.where(np.isfinite(band_prior))[0] if band_prior is not None else np.array([], dtype=int)
             if valid_idx.size > 0:
                 # Fill missing bands by nearest valid estimate (typically high bands
@@ -1319,8 +1531,8 @@ class BaseSERIRGenerator:
             "per_item": per_item,
         }
 
-        # Write inferred priors back to generator so subsequent generate/generate_dataset
-        # use room-specific distributions instead of generic defaults.
+        # Write inferred priors back to generator so subsequent generate
+        # uses room-specific distributions instead of generic defaults.
         if update_generator:
             self.custom_room_range = fitted_room
             self.custom_rt60_range = (rt20, rt80)
@@ -1332,32 +1544,6 @@ class BaseSERIRGenerator:
             self.custom_noise_tilt_db_oct = fit["noise_tilt_db_per_oct_median"]
             self.fitted = fit
         return fit
-
-    def _sample_noise_matrix(self, n_ch, n_samples, noise_items, rng):
-        noise = np.zeros((n_ch, n_samples), dtype=np.float64)
-        if len(noise_items) == 0:
-            for ch in range(n_ch):
-                noise[ch] = rng.standard_normal(n_samples)
-            return noise
-        for ch in range(n_ch):
-            item = noise_items[int(rng.integers(0, len(noise_items)))]
-            x, _ = self._load_audio_mono(item)
-            noise[ch] = self._crop_or_pad(x, n_samples, rng, tile_short=True)
-        return noise
-
-    @staticmethod
-    def _mix_with_snr(y, noise, snr_db):
-        y = np.asarray(y, dtype=np.float64)
-        n = np.asarray(noise, dtype=np.float64)
-        out = np.zeros_like(y)
-        eps = 1e-12
-        lin = 10.0 ** (float(snr_db) / 10.0)
-        for ch in range(y.shape[0]):
-            ps = np.mean(y[ch] ** 2) + eps
-            pn = np.mean(n[ch] ** 2) + eps
-            g = np.sqrt((ps / lin) / pn)
-            out[ch] = y[ch] + g * n[ch]
-        return out
 
     def _sample_branch(self, rng):
         return "generic" if float(rng.uniform()) < self.generic_mix_prob else "custom"
@@ -1411,7 +1597,14 @@ class BaseSERIRGenerator:
         mic_loc = self._get_mic_array_loc(room_size, rng, min_dis_to_wall=0.6)
         src_loc, src_dist = self._get_source_loc(room_size, mic_loc, doa, rng, min_dis_to_wall=0.5)
 
-        params = _call_sample_room_params(imv2, room_size[0], room_size[1], room_size[2], self.fs, rng, rt60_tgt)
+        params = sample_room_params(
+            float(room_size[0]),
+            float(room_size[1]),
+            float(room_size[2]),
+            fs=int(self.fs),
+            rng=rng,
+            rt60_target=float(rt60_tgt),
+        )
         # Per-sample band profile randomization for SE robustness.
         fc = self._jitter_band_centers(rng)
         band_rt60 = self._sample_band_rt60(rt60_tgt, rng, band_prior=band_prior)
@@ -1447,18 +1640,23 @@ class BaseSERIRGenerator:
         rt60_out_ref = None
 
         for ch in range(n_ch):
-            rir, rt60_out = _call_simulate_rir(
-                imv2,
+            out = simulate_rir_with_params(
                 mic_xyz=mic_loc[:, ch],
                 src_xyz=src_loc,
-                doa_deg=doa,
-                lx=room_size[0],
-                ly=room_size[1],
-                lz=room_size[2],
-                fs=self.fs,
+                angle_offset=float(doa),
+                lx=float(room_size[0]),
+                ly=float(room_size[1]),
+                lz=float(room_size[2]),
+                fs=int(self.fs),
                 params=params,
                 rng=rng,
             )
+            if isinstance(out, tuple):
+                rir = out[0]
+                rt60_out = out[1] if len(out) > 1 else None
+            else:
+                rir, rt60_out = out, None
+            rir = np.asarray(rir, dtype=np.float64).reshape(-1)
             raw_rirs.append(np.asarray(rir, dtype=np.float64))
             if ch == 0:
                 rt60_out_ref = rt60_out
@@ -1576,118 +1774,6 @@ class BaseSERIRGenerator:
         }
         return y, ref, meta
 
-    def generate_dataset(
-        self,
-        clean_sources,
-        out_dir,
-        n_items,
-        noise_sources=None,
-        clip_seconds=4.0,
-        seed=0,
-        return_ref=True,
-        ref_direct=True,
-        write_float32=True,
-    ):
-        clean_items = self._resolve_audio_items(clean_sources, "clean_sources")
-        noise_items = self._resolve_audio_items(noise_sources, "noise_sources") if noise_sources is not None else []
-        out = Path(out_dir)
-        mix_dir = out / "mix"
-        clean_dir = out / "clean"
-        ref_dir = out / "ref"
-        out.mkdir(parents=True, exist_ok=True)
-        mix_dir.mkdir(parents=True, exist_ok=True)
-        clean_dir.mkdir(parents=True, exist_ok=True)
-        ref_dir.mkdir(parents=True, exist_ok=True)
-        meta_path = out / "metadata.jsonl"
-
-        rng = np.random.default_rng(int(seed))
-        clip_n = int(max(1, round(float(clip_seconds) * self.fs)))
-        recs = []
-
-        # Batch generation entry: repeatedly sample clean/noise/room params and write
-        # waveform pairs + metadata so SE training can reproduce each sample by seed.
-        for i in range(int(n_items)):
-            clean_item = clean_items[int(rng.integers(0, len(clean_items)))]
-            clean, clean_id = self._load_audio_mono(clean_item)
-            clean = self._crop_or_pad(clean, clip_n, rng, tile_short=False)
-            sample_seed = int(rng.integers(1, 2**31 - 1))
-
-            y_rev, ref, meta = self.generate(
-                clean,
-                seed=sample_seed,
-                return_ref=return_ref,
-                ref_direct=ref_direct,
-                normalize_output=False,
-            )
-            snr_db = self._sample_scalar(rng, self.snr_range_db)
-            noise = self._sample_noise_matrix(y_rev.shape[0], y_rev.shape[1], noise_items, rng)
-            y_mix = self._mix_with_snr(y_rev, noise, snr_db)
-            y_mix, clean_out, ref_out_sig, norm_gain, mix_peak_before_norm = self._final_peak_normalize_triplet(
-                y_mix,
-                clean=clean,
-                ref=ref,
-            )
-
-            mix_path = mix_dir / f"mix_{i:06d}.wav"
-            clean_path = clean_dir / f"clean_{i:06d}.wav"
-            ref_path = ref_dir / f"ref_{i:06d}.wav"
-            dt = np.float32 if write_float32 else np.float64
-            sf.write(str(mix_path), y_mix.T.astype(dt), self.fs)
-            sf.write(str(clean_path), clean_out.astype(dt), self.fs)
-            if return_ref and ref_out_sig is not None:
-                if ref_out_sig.ndim == 2:
-                    sf.write(str(ref_path), ref_out_sig.T.astype(dt), self.fs)
-                else:
-                    sf.write(str(ref_path), ref_out_sig.astype(dt), self.fs)
-                ref_out = str(ref_path)
-            else:
-                ref_out = None
-
-            rec = {
-                "idx": i,
-                "clean_item": clean_id,
-                "mix_path": str(mix_path),
-                "clean_path": str(clean_path),
-                "ref_path": ref_out,
-                "snr_db": float(snr_db),
-                "final_norm_gain": float(norm_gain),
-                "mix_peak_before_norm": float(mix_peak_before_norm),
-                "seed": int(sample_seed),
-                "meta": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in meta.items()},
-            }
-            recs.append(rec)
-
-        with open(meta_path, "w", encoding="utf-8") as f:
-            for r in recs:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
-        return {
-            "out_dir": str(out),
-            "metadata": str(meta_path),
-            "n_generated": len(recs),
-            "generic_mix_prob": float(self.generic_mix_prob),
-        }
-
-
-def _mono_resample_to_fs(x, fs_in, fs_out, allow_upsample=False):
-    x = np.asarray(x, dtype=np.float64)
-    if x.ndim == 2:
-        x = np.mean(x, axis=1)
-    if x.ndim != 1:
-        raise ValueError(f"audio must be 1-D or 2-D, got shape={x.shape}")
-    fs_in = int(round(float(fs_in)))
-    fs_out = int(round(float(fs_out)))
-    if fs_in <= 0 or fs_out <= 0:
-        raise ValueError(f"invalid sample rate: fs_in={fs_in}, fs_out={fs_out}")
-    if fs_in == fs_out:
-        return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-    return _resample_poly_1d(
-        x,
-        fs_in=fs_in,
-        fs_out=fs_out,
-        allow_upsample=allow_upsample,
-    )
-
 
 def _room_range_from_hint(room_size_hint, jitter_ratio):
     room_size_hint = np.asarray(room_size_hint, dtype=np.float64).reshape(3)
@@ -1699,150 +1785,10 @@ def _room_range_from_hint(room_size_hint, jitter_ratio):
         "lz": (max(2.0, lz * (1.0 - j)), max(2.05, lz * (1.0 + j))),
     }
 
-
-def generate_rir_from_recorded_pulse(
-    fs,
-    pulse_recording,
-    use_drr_c50=True,
-    seed=1234,
-    room_size_hint=(3.6, 3.8, 2.7),
-    room_jitter_ratio=0.04,
-    custom_room_range=None,
-    generic_room_range=None,
-):
-    """
-    Minimal callable API for single-RIR generation.
-
-    Inputs:
-    - fs: target sample rate
-    - pulse_recording: path/list for real recorded impulse-like signal(s)
-    - use_drr_c50: whether to apply DRR/C50 target shaping
-
-    Returns:
-    - rir: np.ndarray [n]
-    - meta: dict
-    """
-    fs = int(fs)
-    seed = int(seed)
-
-    # Single-mic setup: this API returns one RIR by design.
-    mic_info = {
-        "device_id": "single_mic_api",
-        "device_height": 1.2,
-        "array_type": "linear",
-        "mic_pos": [0.0],
-    }
-
-    if custom_room_range is None:
-        custom_room_range = _room_range_from_hint(room_size_hint, room_jitter_ratio)
-    if generic_room_range is None:
-        generic_room_range = {"lx": (2.8, 6.5), "ly": (2.8, 6.5), "lz": (2.4, 3.6)}
-
-    # Preset aligned with previous version (before "lighter reverb" tuning).
-    gen = BaseSERIRGenerator(
-        fs=fs,
-        mic_info=mic_info,
-        custom_room_range=custom_room_range,
-        generic_room_range=generic_room_range,
-        custom_rt60_range=(0.2, 1.2),
-        generic_rt60_range=(0.12, 1.3),
-        generic_mix_prob=0.0,  # API path focuses on fitted room
-        center_jitter_oct=1.0 / 6.0,
-        band_rt60_jitter_oct=1.0 / 8.0,
-        band_smoothing_passes=2,
-        source_dist_range=(0.7, 4.2),
-        drr_range_db=(-5.0, 12.0),
-        c50_range_db=(-2.0, 16.0),
-        snr_range_db=(0.0, 25.0),
-        enable_physical_calibration=True,
-        enable_final_output_norm=False,
-    )
-
-    fit = gen.fit_from_recordings(
-        recordings=pulse_recording,
-        room_size_hint=room_size_hint,
-        room_jitter_ratio=room_jitter_ratio,
-        rt60_min_max=(0.12, 1.4),
-        drr_prior_range_db=(-3.0, 8.0),
-        c50_prior_range_db=(0.0, 14.0),
-        drr_c50_jitter_db=0.6,
-        drr_c50_mode=("auto" if bool(use_drr_c50) else "fixed"),
-        drr_c50_from_recording_jitter_db=0.2,
-        fit_seed=seed,
-        update_generator=True,
-    )
-
-    # Delta excitation -> generated channel output equals RIR.
-    rir_len = int(max(512, round(2.5 * fs)))
-    dry_delta = np.zeros(rir_len, dtype=np.float64)
-    dry_delta[0] = 1.0
-    y, _, meta = gen.generate(
-        dry_delta,
-        seed=seed + 1,
-        return_ref=False,
-        ref_direct=True,
-        branch="custom",
-        normalize_output=False,
-        apply_drr_c50=bool(use_drr_c50),
-    )
-    rir = np.asarray(y[0], dtype=np.float64)
-
-    meta["api_use_drr_c50"] = bool(use_drr_c50)
-    meta["api_fit_rt60_median"] = float(fit["rt60_median"])
-    meta["api_fit_drr_range"] = fit["drr_db_p20_p80"]
-    meta["api_fit_c50_range"] = fit["c50_db_p20_p80"]
-    return rir, meta
-
-
-if __name__ == "__main__":
-    # Minimal module-style demo:
-    # Input only: fs + recorded pulse signal + whether to apply DRR/C50.
-    fs = 32000
-    pulse_recording = "/home/xukj/dataset_comsolTest/room_test"
-    use_drr_c50 = True
-    dry_wav = "/home/xukj/dataset_rir/sound_field_sim/test.wav"
-
-    out_dir = Path("./_demo_module")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    rir, meta = generate_rir_from_recorded_pulse(
-        fs=fs,
-        pulse_recording=pulse_recording,
-        use_drr_c50=use_drr_c50,
-        seed=2026,
-    )
-    rir_path = out_dir / "rir_from_pulse.wav"
-    sf.write(str(rir_path), rir.astype(np.float32), fs)
-
-    if Path(dry_wav).exists():
-        dry_raw, dry_fs = sf.read(dry_wav, dtype="float64")
-        dry = _mono_resample_to_fs(dry_raw, dry_fs, fs)
-        dry_id = dry_wav
-    else:
-        dry_id = "<synthetic>"
-        t = np.arange(int(4.0 * fs), dtype=np.float64) / fs
-        dry = 0.15 * np.sin(2.0 * np.pi * 220.0 * t) + 0.08 * np.sin(2.0 * np.pi * 440.0 * t)
-
-    wet = fftconvolve(dry, rir)[:len(dry)]
-    peak_wet = float(np.max(np.abs(wet))) if wet.size > 0 else 0.0
-    if peak_wet > 0.99:
-        wet = wet / peak_wet * 0.99
-
-    dry_path = out_dir / "dry.wav"
-    wet_path = out_dir / "wet.wav"
-    sf.write(str(dry_path), dry.astype(np.float32), fs)
-    sf.write(str(wet_path), wet.astype(np.float32), fs)
-
-    print("\n=== [MODULE DEMO] pulse -> rir -> wet ===")
-    print("fs:", fs)
-    print("pulse_recording:", pulse_recording)
-    print("use_drr_c50:", use_drr_c50)
-    print("dry source:", dry_id)
-    print("saved rir:", str(rir_path))
-    print("saved dry:", str(dry_path))
-    print("saved wet:", str(wet_path))
-    print("rt60 target/real:", meta.get("rt60_target"), meta.get("rt60_real"))
-    print("drr target/real:", meta.get("drr_target_db"), meta.get("drr_real_db"))
-    print("c50 target/real:", meta.get("c50_target_db"), meta.get("c50_real_db"))
-    print("drr_c50_applied:", meta.get("drr_c50_applied"))
+__all__ = [
+    "BaseEngine",
+    "_room_range_from_hint",
+    "sample_room_params",
+    "simulate_rir_with_params",
+]
 

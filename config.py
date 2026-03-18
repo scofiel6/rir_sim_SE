@@ -92,7 +92,7 @@ class RIRSimSEConfig:
         "west": 1.00, "east": 1.00, "south": 1.00, "north": 1.00, "floor": 1.00, "ceiling": 1.00
     })
 
-    # Low-frequency modal tail controls (fed into im_rir_v2 core).
+    # Low-frequency modal tail controls for the base engine.
     mode_fmin_hz: float = 40.0
     mode_fmax_hz: float = 800.0
     mode_n_min: int = 3
@@ -173,10 +173,3 @@ def load_rir_sim_se_config(config_path):
         # Default state file is stored beside cfg json.
         cfg.acoustic_state_json = str((base_dir / "acoustic_state.json").resolve())
     return cfg
-
-
-def save_rir_sim_se_config(cfg: RIRSimSEConfig, config_path):
-    p = Path(config_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cfg.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    return str(p)

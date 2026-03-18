@@ -1,11 +1,7 @@
 import numpy as np
 
 from config import RIRSimSEConfig
-from imrir_adapter import base, call_sample_room_params, call_simulate_rir
-
-
-BaseSERIRGenerator = base.BaseSERIRGenerator
-_room_range_from_hint = base._room_range_from_hint
+from engine.sound_field_sim.base_engine import BaseEngine, _room_range_from_hint
 
 
 def _build_mic_info(cfg: RIRSimSEConfig):
@@ -51,9 +47,6 @@ def _clip_range(rng, lo, hi, min_width=0.05):
 
 
 def create_generator(cfg: RIRSimSEConfig):
-    if (not callable(call_sample_room_params)) or (not callable(call_simulate_rir)):
-        raise RuntimeError("im_rir_v2 adapter is not available.")
-
     custom_room_range = cfg.custom_room_range
     if custom_room_range is None:
         custom_room_range = _room_range_from_hint(cfg.room_size_hint, cfg.room_jitter_ratio)
@@ -65,7 +58,7 @@ def create_generator(cfg: RIRSimSEConfig):
     }
 
     # Keep baseline conservative for small-room SE.
-    gen = BaseSERIRGenerator(
+    gen = BaseEngine(
         fs=cfg.fs,
         mic_info=_build_mic_info(cfg),
         custom_room_range=custom_room_range,

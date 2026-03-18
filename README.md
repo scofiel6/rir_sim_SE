@@ -23,9 +23,11 @@ out = generate_rir_from_state(cfg, state=state)
 - `state_choice = "invert"`: invert from `cfg.pulse_recording`, then save/update `acoustic_state.json`.
 - `state_choice = "json"`: load from `cfg.acoustic_state_json` directly.
 
-Outputs are written to `tests/re/`:
+Outputs are written to `outputs/`:
 - `rir.wav`, `rir_ref1.wav`, `rir_ref2.wav`
 - `dry.wav`, `wet.wav`, `wet_ref1.wav`, `wet_ref2.wav`
+
+If `cfg.dry_wav` does not exist locally, `main.py` falls back to a short synthetic dry signal.
 
 ## Config
 
@@ -40,3 +42,11 @@ Core physical controls include:
 - `mode_fmin_hz`, `mode_fmax_hz`
 - `mode_n_min`, `mode_n_max`
 - `mode_rel_db_min`, `mode_rel_db_max`
+
+## Engine Layout
+
+Public engine entry:
+- `engine/sound_field_sim/base_engine.py`
+
+Engine implementation lives directly in `base_engine.py`.
+Project scripts should import the engine from `base_engine.py`.

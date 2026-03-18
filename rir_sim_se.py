@@ -5,7 +5,6 @@ import numpy as np
 
 from acoustic_inversion import create_generator_from_fit, invert_acoustic_params
 from config import RIRSimSEConfig
-from rir_generation import generate_single_rir
 
 
 def _as_2d_ch_first(x):
@@ -13,6 +12,52 @@ def _as_2d_ch_first(x):
     if arr.ndim == 1:
         return arr.reshape(1, -1)
     return arr
+
+
+def _build_ref1_from_full_rir(rir, fs, ref_early_ms=20.0, ref_late_tail_db=-26.0):
+    r = np.asarray(rir, dtype=np.float64).reshape(-1)
+    if r.size == 0:
+        return r
+
+    # ref1 keeps direct + early energy and only a weak late tail.
+    early_n = max(1, int(round(float(ref_early_ms) * 1e-3 * fs)))
+    direct_idx = _direct_index_from_rir(r, fs=fs)
+    cut = min(r.size, direct_idx + early_n)
+
+    ref = np.zeros_like(r)
+    ref[:cut] = r[:cut]
+    if cut < r.size:
+        t = np.linspace(0.0, 1.0, r.size - cut, endpoint=False)
+        ref[cut:] = r[cut:] * float(10.0 ** (float(ref_late_tail_db) / 20.0)) * np.exp(-4.0 * t)
+    return ref
+
+
+def _generate_full_and_ref1_rir(gen, seed, use_drr_c50, rir_seconds, ref_early_ms, ref_late_tail_db):
+    fs = int(gen.fs)
+    rir_len = int(max(512, round(float(rir_seconds) * fs)))
+    dry_delta = np.zeros(rir_len, dtype=np.float64)
+    dry_delta[0] = 1.0
+
+    # Delta excitation makes the generator output equal the sampled RIR itself.
+    y, _, meta = gen.generate(
+        dry_delta,
+        seed=int(seed),
+        return_ref=False,
+        ref_direct=True,
+        branch="custom",
+        normalize_output=False,
+        apply_drr_c50=bool(use_drr_c50),
+    )
+    rirs = _as_2d_ch_first(y)
+    ref1 = np.zeros_like(rirs)
+    for ch in range(rirs.shape[0]):
+        ref1[ch] = _build_ref1_from_full_rir(
+            rirs[ch],
+            fs=fs,
+            ref_early_ms=float(ref_early_ms),
+            ref_late_tail_db=float(ref_late_tail_db),
+        )
+    return rirs, ref1, meta
 
 
 def _direct_index_from_rir(r, fs, search_ms=120.0):
@@ -225,7 +270,7 @@ def invert_acoustic_state(cfg: RIRSimSEConfig, pulse_recording):
 
 def save_acoustic_state_json(state, json_path):
     """
-    Save inversion result to json so it can be reused without re-fitting.
+    Save only the compact fit needed for later synthesis.
     """
     if not isinstance(state, dict):
         raise ValueError("state must be a dict")
@@ -273,7 +318,8 @@ def generate_rir_from_state(cfg: RIRSimSEConfig, state, seed=None):
         seed = int(cfg.seed) + 1
 
     gen = state["gen"]
-    rirs, ref1_rirs, meta = generate_single_rir(
+    # Build full RIR first, then derive lightweight training targets from it.
+    rirs, ref1_rirs, meta = _generate_full_and_ref1_rir(
         gen=gen,
         seed=int(seed),
         use_drr_c50=bool(cfg.use_drr_c50),
