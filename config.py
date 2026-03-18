@@ -11,6 +11,12 @@ DEFAULT_LATE_REVERB_BANDWIDTH_OCT = 0.9
 DEFAULT_LATE_REVERB_BREAK_FRACTIONS = (0.18, 0.60)
 DEFAULT_LATE_REVERB_DENSITY_SCALE = 1.0
 DEFAULT_LATE_REVERB_SLOPE_SCALES = (0.62, 1.00, 0.58)
+DEFAULT_SOURCE_DIRECTIVITY_STRENGTH = 1.0
+DEFAULT_SOURCE_HEAD_SHADOW_STRENGTH = 1.0
+DEFAULT_SOURCE_TORSO_SCATTERING_STRENGTH = 1.0
+DEFAULT_SOURCE_HEAD_RADIUS_M = 0.09
+DEFAULT_SOURCE_TORSO_RADIUS_M = 0.17
+DEFAULT_SOURCE_DIRECTIVITY_BANDWIDTH_OCT = 1.0
 DEFAULT_MODE_FMIN_HZ = 40.0
 DEFAULT_MODE_FMAX_HZ = 800.0
 DEFAULT_MODE_N_MIN = 3
@@ -204,6 +210,13 @@ class RIRSimSEConfig:
     late_reverb_break_fractions: Tuple[float, float] = DEFAULT_LATE_REVERB_BREAK_FRACTIONS
     late_reverb_density_scale: float = DEFAULT_LATE_REVERB_DENSITY_SCALE
     late_reverb_slope_scales: Tuple[float, float, float] = DEFAULT_LATE_REVERB_SLOPE_SCALES
+    # Source radiation and source-side head/torso scattering priors.
+    source_directivity_strength: float = DEFAULT_SOURCE_DIRECTIVITY_STRENGTH
+    source_head_shadow_strength: float = DEFAULT_SOURCE_HEAD_SHADOW_STRENGTH
+    source_torso_scattering_strength: float = DEFAULT_SOURCE_TORSO_SCATTERING_STRENGTH
+    source_head_radius_m: float = DEFAULT_SOURCE_HEAD_RADIUS_M
+    source_torso_radius_m: float = DEFAULT_SOURCE_TORSO_RADIUS_M
+    source_directivity_bandwidth_oct: float = DEFAULT_SOURCE_DIRECTIVITY_BANDWIDTH_OCT
     # Low-frequency modal tail priors used by the engine.
     # These are the single source of truth for modal augmentation defaults.
     mode_fmin_hz: float = DEFAULT_MODE_FMIN_HZ
@@ -262,6 +275,12 @@ class RIRSimSEConfig:
             "late_tail_highpass_hz",
             "late_reverb_bandwidth_oct",
             "late_reverb_density_scale",
+            "source_directivity_strength",
+            "source_head_shadow_strength",
+            "source_torso_scattering_strength",
+            "source_head_radius_m",
+            "source_torso_radius_m",
+            "source_directivity_bandwidth_oct",
             "mode_fmin_hz",
             "mode_fmax_hz",
             "mode_rel_db_min",

@@ -3,7 +3,6 @@ from pathlib import Path
 import numpy as np
 import pyroomacoustics as pra
 import soundfile as sf
-from pyroomacoustics.directivities import Cardioid, DirectionVector
 from scipy.interpolate import interp1d
 from scipy.signal import butter, fftconvolve, sosfilt
 
@@ -22,6 +21,12 @@ from config import (
     DEFAULT_MODE_REL_DB_MAX,
     DEFAULT_MODE_REL_DB_MIN,
     DEFAULT_SOUND_SPEED_M_S,
+    DEFAULT_SOURCE_DIRECTIVITY_BANDWIDTH_OCT,
+    DEFAULT_SOURCE_DIRECTIVITY_STRENGTH,
+    DEFAULT_SOURCE_HEAD_RADIUS_M,
+    DEFAULT_SOURCE_HEAD_SHADOW_STRENGTH,
+    DEFAULT_SOURCE_TORSO_RADIUS_M,
+    DEFAULT_SOURCE_TORSO_SCATTERING_STRENGTH,
 )
 from utils import to_mono
 
@@ -263,14 +268,160 @@ def _synthesize_multiband_late_reverb(fs, tail_len, room_dim, rt60_target, param
     return tail, trace
 
 
-class SoftCardioid(Cardioid):
-    def __init__(self, orientation, alpha=0.3, gain=1.0):
-        super().__init__(orientation, gain=gain)
-        self.alpha = alpha
+def _safe_unit(vec):
+    v = np.asarray(vec, dtype=np.float64).reshape(-1)
+    n = float(np.linalg.norm(v))
+    if not np.isfinite(n) or n <= 1e-12:
+        out = np.zeros_like(v, dtype=np.float64)
+        if out.size > 0:
+            out[0] = 1.0
+        return out
+    return v / n
 
-    def evaluate(self, direction):
-        base = super().evaluate(direction)
-        return self.alpha + (1 - self.alpha) * base
+
+def _angular_log_interp_gain(freqs, center_freqs, band_gains, bandwidth_oct=1.0):
+    f = np.asarray(freqs, dtype=np.float64).reshape(-1)
+    fc = np.asarray(center_freqs, dtype=np.float64).reshape(-1)
+    g = np.asarray(band_gains, dtype=np.float64).reshape(-1)
+    if f.size == 0 or fc.size == 0 or g.size == 0:
+        return np.ones_like(f, dtype=np.float64)
+
+    n = min(fc.size, g.size)
+    fc = fc[:n]
+    g = np.clip(g[:n], 1e-4, 10.0)
+    out = np.zeros_like(f, dtype=np.float64)
+    wsum = np.zeros_like(f, dtype=np.float64)
+    for i in range(n):
+        w = _log_gaussian_band_weights(f, fc[i], bandwidth_oct=bandwidth_oct)
+        out += np.log(g[i]) * w
+        wsum += w
+    fill = float(np.mean(np.log(g)))
+    mask = wsum > 1e-8
+    resp = np.empty_like(f, dtype=np.float64)
+    resp[mask] = np.exp(out[mask] / wsum[mask])
+    resp[~mask] = np.exp(fill)
+    resp[0] = 1.0
+    return resp
+
+
+def _apply_frequency_response(sig, fs, center_freqs, band_gains, bandwidth_oct=1.0):
+    x = np.asarray(sig, dtype=np.float64).reshape(-1)
+    if x.size == 0:
+        return x
+    freqs = np.fft.rfftfreq(x.size, d=1.0 / float(fs))
+    resp = _angular_log_interp_gain(freqs, center_freqs, band_gains, bandwidth_oct=bandwidth_oct)
+    y = np.fft.irfft(np.fft.rfft(x) * resp, n=x.size)
+    return np.asarray(y, dtype=np.float64)
+
+
+def _compute_voice_radiation_band_gains(center_freqs, src_xyz, mic_xyz, source_forward, params):
+    fc = np.asarray(center_freqs, dtype=np.float64).reshape(-1)
+    if fc.size == 0:
+        return np.ones(0, dtype=np.float64), {}
+
+    ray = _safe_unit(np.asarray(mic_xyz, dtype=np.float64) - np.asarray(src_xyz, dtype=np.float64))
+    fwd = _safe_unit(source_forward)
+    cos_theta = float(np.clip(np.dot(fwd, ray), -1.0, 1.0))
+    frontness = 0.5 * (1.0 + cos_theta)
+    backness = 1.0 - frontness
+    elevation = float(np.clip(ray[2], -1.0, 1.0)) if ray.size >= 3 else 0.0
+
+    directivity_strength = float(params.get("source_directivity_strength", DEFAULT_SOURCE_DIRECTIVITY_STRENGTH))
+    head_shadow_strength = float(params.get("source_head_shadow_strength", DEFAULT_SOURCE_HEAD_SHADOW_STRENGTH))
+    torso_strength = float(params.get("source_torso_scattering_strength", DEFAULT_SOURCE_TORSO_SCATTERING_STRENGTH))
+    head_radius = float(max(0.04, params.get("source_head_radius_m", DEFAULT_SOURCE_HEAD_RADIUS_M)))
+    torso_radius = float(max(0.08, params.get("source_torso_radius_m", DEFAULT_SOURCE_TORSO_RADIUS_M)))
+
+    head_transition_hz = float(max(350.0, params.get("sound_speed_m_s", DEFAULT_SOUND_SPEED_M_S) / (2.0 * np.pi * head_radius)))
+    torso_transition_hz = float(max(180.0, params.get("sound_speed_m_s", DEFAULT_SOUND_SPEED_M_S) / (2.0 * np.pi * torso_radius)))
+    freq_weight = 1.0 - np.exp(-np.maximum(fc, 1.0) / head_transition_hz)
+
+    # Spherical-harmonic style radiation model: low frequencies stay close to omni,
+    # high frequencies become forward-biased with stronger rear attenuation.
+    p2 = 0.5 * (3.0 * cos_theta * cos_theta - 1.0)
+    dir_gain = 1.0 + directivity_strength * (0.55 * freq_weight * cos_theta + 0.18 * (freq_weight ** 1.3) * p2)
+    dir_gain = np.clip(dir_gain, 0.18, 2.4)
+
+    # Source-side head shadow: mainly high-frequency rear attenuation.
+    shadow_db = head_shadow_strength * (5.5 + 6.5 * freq_weight) * backness * (1.0 - 0.25 * abs(elevation))
+    shadow_gain = np.power(10.0, -np.clip(shadow_db, 0.0, 18.0) / 20.0)
+
+    # Torso scattering: low-mid presence in front, upper-mid loss toward the back.
+    low_mid = np.exp(-0.5 * (np.log2(np.maximum(fc, 1.0) / max(350.0, torso_transition_hz)) / 0.80) ** 2)
+    presence = np.exp(-0.5 * (np.log2(np.maximum(fc, 1.0) / max(900.0, 1.8 * torso_transition_hz)) / 0.70) ** 2)
+    rear_notch = np.exp(-0.5 * (np.log2(np.maximum(fc, 1.0) / 2600.0) / 0.80) ** 2)
+    torso_db = torso_strength * (
+        (1.2 * frontness + 0.4 * (1.0 - abs(elevation))) * low_mid
+        + (2.2 * frontness) * presence
+        - (3.0 * backness) * rear_notch
+    )
+    torso_gain = np.power(10.0, np.clip(torso_db, -8.0, 6.0) / 20.0)
+
+    total_gain = np.clip(dir_gain * shadow_gain * torso_gain, 0.08, 3.0)
+    trace = {
+        "cos_theta": float(cos_theta),
+        "frontness": float(frontness),
+        "backness": float(backness),
+        "elevation_component": float(elevation),
+        "head_transition_hz": float(head_transition_hz),
+        "torso_transition_hz": float(torso_transition_hz),
+        "band_gains": [float(v) for v in total_gain.tolist()],
+    }
+    return total_gain, trace
+
+
+def _apply_source_radiation_and_scattering(rir, fs, split_idx, src_xyz, mic_xyz, source_forward, params):
+    r = np.asarray(rir, dtype=np.float64).reshape(-1)
+    if r.size < 16:
+        return r, {"enabled": False}
+
+    fc = np.asarray(params.get("center_freqs", [125, 250, 500, 1000, 2000, 4000, 8000]), dtype=np.float64).reshape(-1)
+    if fc.size == 0:
+        return r, {"enabled": False}
+
+    direct_gains, ang_trace = _compute_voice_radiation_band_gains(
+        fc,
+        src_xyz=src_xyz,
+        mic_xyz=mic_xyz,
+        source_forward=source_forward,
+        params=params,
+    )
+    scat = np.asarray(params.get("band_scattering_curve", np.full(fc.shape, 0.35)), dtype=np.float64).reshape(-1)
+    if scat.size != fc.size:
+        scat = np.full(fc.shape, float(np.nanmean(scat)) if scat.size > 0 else 0.35, dtype=np.float64)
+    scat = np.clip(scat, 0.05, 0.95)
+
+    direct_idx = int(np.argmax(np.abs(r[: min(r.size, max(16, int(0.03 * fs)))])))
+    direct_end = min(r.size, direct_idx + max(1, int(0.003 * fs)))
+    early_end = min(r.size, max(direct_end + 1, int(split_idx)))
+    bw = float(params.get("source_directivity_bandwidth_oct", DEFAULT_SOURCE_DIRECTIVITY_BANDWIDTH_OCT))
+
+    early_mix = np.clip(0.22 + 0.55 * (1.0 - scat), 0.10, 0.85)
+    late_mix = np.clip(0.04 + 0.16 * (1.0 - scat), 0.03, 0.28)
+    early_gains = np.exp(early_mix * np.log(np.clip(direct_gains, 1e-4, 10.0)))
+    late_gains = np.exp(late_mix * np.log(np.clip(direct_gains, 1e-4, 10.0)))
+
+    r_dir = _apply_frequency_response(r, fs, fc, direct_gains, bandwidth_oct=bw)
+    r_early = _apply_frequency_response(r, fs, fc, early_gains, bandwidth_oct=bw)
+    r_late = _apply_frequency_response(r, fs, fc, late_gains, bandwidth_oct=bw)
+
+    out = np.zeros_like(r)
+    out[:direct_end] = r_dir[:direct_end]
+    out[direct_end:early_end] = r_early[direct_end:early_end]
+    out[early_end:] = r_late[early_end:]
+    trace = {
+        "enabled": True,
+        "variant": "voice_radiation_head_torso",
+        "direct_index": int(direct_idx),
+        "direct_end": int(direct_end),
+        "early_end": int(early_end),
+        "bandwidth_oct": float(bw),
+        "direct_band_gains": [float(v) for v in direct_gains.tolist()],
+        "early_band_gains": [float(v) for v in early_gains.tolist()],
+        "late_band_gains": [float(v) for v in late_gains.tolist()],
+        "angular": ang_trace,
+    }
+    return out, trace
 
 
 def _weighted_scattering_scalar(scattering_curve, center_freqs):
@@ -426,8 +577,8 @@ def simulate_rir_with_params(
         air_absorption=True,
     )
     azimuth = np.deg2rad(angle_offset)
-    orientation = DirectionVector(azimuth, np.pi / 2, degrees=False)
-    room.add_source(list(src_xyz), signal=None, directivity=SoftCardioid(orientation, alpha=0.7))
+    source_forward = np.array([np.cos(azimuth), np.sin(azimuth), 0.0], dtype=np.float64)
+    room.add_source(list(src_xyz), signal=None)
     room.add_microphone_array(np.array(mic_xyz, dtype=np.float64).reshape(3, 1))
     room.compute_rir()
     rir_ism = np.asarray(room.rir[0][0], dtype=np.float64)
@@ -480,6 +631,15 @@ def simulate_rir_with_params(
     a0 = split_idx - fade_len
     tail *= np.sqrt(np.mean(early[a0:split_idx] ** 2) + 1e-12) / np.sqrt(np.mean(tail[:fade_len] ** 2) + 1e-12)
     rir = np.concatenate([early[:a0], early[a0:split_idx] * (1 - w) + tail[:fade_len] * w, tail[fade_len:]])
+    rir, source_radiation_trace = _apply_source_radiation_and_scattering(
+        rir,
+        fs=fs,
+        split_idx=split_idx,
+        src_xyz=src_xyz,
+        mic_xyz=mic_xyz,
+        source_forward=source_forward,
+        params=params,
+    )
 
     params["_trace_last"] = {
         "engine_variant": "vector",
@@ -488,6 +648,7 @@ def simulate_rir_with_params(
         "fade_len": int(fade_len),
         "tail_len": int(tail_len),
         "late_reverb": late_reverb_trace,
+        "source_radiation": source_radiation_trace,
         "max_order": int(params.get("max_order", -1)),
         "mode_meta": mode_meta,
     }
@@ -602,6 +763,12 @@ class BaseEngine:
         self.late_reverb_break_fractions = tuple(float(v) for v in DEFAULT_LATE_REVERB_BREAK_FRACTIONS)
         self.late_reverb_density_scale = float(DEFAULT_LATE_REVERB_DENSITY_SCALE)
         self.late_reverb_slope_scales = tuple(float(v) for v in DEFAULT_LATE_REVERB_SLOPE_SCALES)
+        self.source_directivity_strength = float(DEFAULT_SOURCE_DIRECTIVITY_STRENGTH)
+        self.source_head_shadow_strength = float(DEFAULT_SOURCE_HEAD_SHADOW_STRENGTH)
+        self.source_torso_scattering_strength = float(DEFAULT_SOURCE_TORSO_SCATTERING_STRENGTH)
+        self.source_head_radius_m = float(DEFAULT_SOURCE_HEAD_RADIUS_M)
+        self.source_torso_radius_m = float(DEFAULT_SOURCE_TORSO_RADIUS_M)
+        self.source_directivity_bandwidth_oct = float(DEFAULT_SOURCE_DIRECTIVITY_BANDWIDTH_OCT)
         # Low-frequency modal controls (overridden from cfg).
         self.mode_fmin_hz = float(DEFAULT_MODE_FMIN_HZ)
         self.mode_fmax_hz = float(DEFAULT_MODE_FMAX_HZ)
@@ -2051,6 +2218,12 @@ class BaseEngine:
             params["late_reverb_break_fractions"] = [float(v) for v in getattr(self, "late_reverb_break_fractions", DEFAULT_LATE_REVERB_BREAK_FRACTIONS)]
             params["late_reverb_density_scale"] = float(getattr(self, "late_reverb_density_scale", DEFAULT_LATE_REVERB_DENSITY_SCALE))
             params["late_reverb_slope_scales"] = [float(v) for v in getattr(self, "late_reverb_slope_scales", DEFAULT_LATE_REVERB_SLOPE_SCALES)]
+            params["source_directivity_strength"] = float(getattr(self, "source_directivity_strength", DEFAULT_SOURCE_DIRECTIVITY_STRENGTH))
+            params["source_head_shadow_strength"] = float(getattr(self, "source_head_shadow_strength", DEFAULT_SOURCE_HEAD_SHADOW_STRENGTH))
+            params["source_torso_scattering_strength"] = float(getattr(self, "source_torso_scattering_strength", DEFAULT_SOURCE_TORSO_SCATTERING_STRENGTH))
+            params["source_head_radius_m"] = float(getattr(self, "source_head_radius_m", DEFAULT_SOURCE_HEAD_RADIUS_M))
+            params["source_torso_radius_m"] = float(getattr(self, "source_torso_radius_m", DEFAULT_SOURCE_TORSO_RADIUS_M))
+            params["source_directivity_bandwidth_oct"] = float(getattr(self, "source_directivity_bandwidth_oct", DEFAULT_SOURCE_DIRECTIVITY_BANDWIDTH_OCT))
             params["mode_fmin_hz"] = float(getattr(self, "mode_fmin_hz", DEFAULT_MODE_FMIN_HZ))
             params["mode_fmax_hz"] = float(getattr(self, "mode_fmax_hz", DEFAULT_MODE_FMAX_HZ))
             params["mode_n_range"] = [int(n_min), int(n_max)]

@@ -116,6 +116,8 @@ Important config groups:
   `material_center_freqs_hz`, `material_absorption_curve`, `material_scattering_curve`
 - Late reverb:
   `late_tail_highpass_hz`, `late_reverb_bandwidth_oct`, `late_reverb_break_fractions`, `late_reverb_density_scale`, `late_reverb_slope_scales`
+- Source radiation:
+  `source_directivity_strength`, `source_head_shadow_strength`, `source_torso_scattering_strength`, `source_head_radius_m`, `source_torso_radius_m`, `source_directivity_bandwidth_oct`
 - Low-frequency modal tail:
   `mode_fmin_hz`, `mode_fmax_hz`, `mode_n_min`, `mode_n_max`, `mode_rel_db_min`, `mode_rel_db_max`
 - Output device EQ:

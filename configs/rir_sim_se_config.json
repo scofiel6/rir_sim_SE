@@ -99,6 +99,14 @@
   "late_reverb_break_fractions": [0.18, 0.60],
   "late_reverb_density_scale": 1.0,
   "late_reverb_slope_scales": [0.62, 1.0, 0.58],
+  // Source-side voice radiation and head/torso scattering.
+  // These control frequency-dependent human voice directivity, not a simple cardioid.
+  "source_directivity_strength": 1.0,
+  "source_head_shadow_strength": 1.0,
+  "source_torso_scattering_strength": 1.0,
+  "source_head_radius_m": 0.09,
+  "source_torso_radius_m": 0.17,
+  "source_directivity_bandwidth_oct": 1.0,
   "mode_fmin_hz": 40.0,
   "mode_fmax_hz": 800.0,
   "mode_n_min": 4,
