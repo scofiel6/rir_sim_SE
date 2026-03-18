@@ -1,4 +1,5 @@
 {
+  // Core runtime.
   "fs": 32000,
   "seed": 2026,
   "use_drr_c50": true,
@@ -24,9 +25,54 @@
   "ref2_early_taps": 8,
   "ref2_min_tap_ms": 0.4,
 
+  // Material prior library used by the engine when sampling wall/floor/ceiling categories.
+  // Change material coefficients here instead of editing base_engine.py.
   "material_center_freqs_hz": [125, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000],
   "material_absorption_curve": [1.3, 1.22, 1.12, 1.0, 0.94, 0.92, 0.95, 1.1, 1.2],
   "material_scattering_curve": [0.22, 0.24, 0.26, 0.3, 0.34, 0.4, 0.48, 0.54, 0.58],
+  "material_library": {
+    "painted_wall": {
+      "absorption": [0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
+      "scattering": [0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22]
+    },
+    "gypsum_board": {
+      "absorption": [0.10, 0.10, 0.08, 0.07, 0.06, 0.05, 0.05],
+      "scattering": [0.08, 0.10, 0.12, 0.14, 0.16, 0.18, 0.20]
+    },
+    "concrete": {
+      "absorption": [0.01, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02],
+      "scattering": [0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16]
+    },
+    "glass": {
+      "absorption": [0.03, 0.03, 0.03, 0.04, 0.05, 0.06, 0.06],
+      "scattering": [0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18]
+    },
+    "curtain_heavy": {
+      "absorption": [0.15, 0.25, 0.40, 0.55, 0.65, 0.70, 0.72],
+      "scattering": [0.12, 0.14, 0.16, 0.20, 0.24, 0.30, 0.36]
+    },
+    "carpet_floor": {
+      "absorption": [0.08, 0.12, 0.20, 0.30, 0.40, 0.50, 0.55],
+      "scattering": [0.10, 0.14, 0.18, 0.22, 0.26, 0.32, 0.36]
+    },
+    "wood_floor": {
+      "absorption": [0.05, 0.06, 0.08, 0.10, 0.11, 0.12, 0.12],
+      "scattering": [0.08, 0.10, 0.12, 0.16, 0.20, 0.24, 0.28]
+    },
+    "acoustic_tile_ceiling": {
+      "absorption": [0.30, 0.45, 0.65, 0.75, 0.75, 0.70, 0.65],
+      "scattering": [0.18, 0.22, 0.28, 0.34, 0.38, 0.40, 0.42]
+    },
+    "plaster_ceiling": {
+      "absorption": [0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16],
+      "scattering": [0.10, 0.12, 0.14, 0.18, 0.22, 0.26, 0.30]
+    }
+  },
+  "material_face_category_groups": {
+    "wall": ["painted_wall", "gypsum_board", "concrete", "glass", "curtain_heavy"],
+    "floor": ["carpet_floor", "wood_floor"],
+    "ceiling": ["acoustic_tile_ceiling", "plaster_ceiling"]
+  },
   "material_face_absorption_scale": {
     "west": 1.0,
     "east": 1.0,
@@ -43,6 +89,10 @@
     "floor": 1.0,
     "ceiling": 1.0
   },
+  // Physical propagation and late-tail modal priors.
+  // These values are the single source of truth for low-frequency modal augmentation.
+  "sound_speed_m_s": 343.0,
+  "late_tail_highpass_hz": 40.0,
   "mode_fmin_hz": 40.0,
   "mode_fmax_hz": 800.0,
   "mode_n_min": 4,

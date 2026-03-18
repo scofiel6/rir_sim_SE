@@ -46,6 +46,23 @@ def _clip_range(rng, lo, hi, min_width=0.05):
     return (float(a), float(b))
 
 
+def _merge_fit_dicts(stage1_fit, stage2_fit):
+    fit = dict(stage1_fit) if isinstance(stage1_fit, dict) else {}
+    if not isinstance(stage2_fit, dict):
+        return fit
+
+    warnings = []
+    if isinstance(fit.get("warnings"), list):
+        warnings.extend(fit["warnings"])
+    if isinstance(stage2_fit.get("warnings"), list):
+        warnings.extend(stage2_fit["warnings"])
+
+    fit.update({k: v for k, v in stage2_fit.items() if k != "warnings"})
+    if len(warnings) > 0:
+        fit["warnings"] = list(dict.fromkeys(warnings))
+    return fit
+
+
 def create_generator(cfg: RIRSimSEConfig):
     custom_room_range = cfg.custom_room_range
     if custom_room_range is None:
@@ -80,8 +97,21 @@ def create_generator(cfg: RIRSimSEConfig):
     gen.material_center_freqs = np.asarray(cfg.material_center_freqs_hz, dtype=np.float64)
     gen.material_absorption_curve = np.asarray(cfg.material_absorption_curve, dtype=np.float64)
     gen.material_scattering_curve = np.asarray(cfg.material_scattering_curve, dtype=np.float64)
+    gen.material_library = {
+        name: {
+            "absorption": tuple(float(v) for v in spec["absorption"]),
+            "scattering": tuple(float(v) for v in spec["scattering"]),
+        }
+        for name, spec in cfg.material_library.items()
+    }
+    gen.material_face_category_groups = {
+        face_type: tuple(str(v) for v in names)
+        for face_type, names in cfg.material_face_category_groups.items()
+    }
     gen.material_face_absorption_scale = dict(cfg.material_face_absorption_scale)
     gen.material_face_scattering_scale = dict(cfg.material_face_scattering_scale)
+    gen.sound_speed_m_s = float(cfg.sound_speed_m_s)
+    gen.late_tail_highpass_hz = float(cfg.late_tail_highpass_hz)
     gen.mode_fmin_hz = float(cfg.mode_fmin_hz)
     gen.mode_fmax_hz = float(cfg.mode_fmax_hz)
     gen.mode_n_min = int(cfg.mode_n_min)
@@ -141,8 +171,7 @@ def create_generator_from_fit(cfg: RIRSimSEConfig, fit):
     return _apply_conservative_postfit_clamp(gen, cfg)
 
 
-def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
-    gen = create_generator(cfg)
+def _run_stage1_statistical_inversion(gen, cfg: RIRSimSEConfig, pulse_recording):
     rt60_lo = float(min(cfg.inversion_rt60_min, cfg.inversion_rt60_max))
     rt60_hi = float(max(cfg.inversion_rt60_min, cfg.inversion_rt60_max))
     mode = str(cfg.inversion_drr_c50_mode).lower().strip()
@@ -189,6 +218,27 @@ def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
     if isinstance(fit, dict):
         fit["drr_c50_mode_requested"] = str(mode)
         fit["drr_c50_mode_effective"] = str(effective_mode)
+        fit["inversion_stage1"] = "statistical_priors"
+    return fit
+
+
+def _run_stage2_echo_structure_inversion(gen, pulse_recording):
+    fit = gen.analyze_reflection_structure_from_recordings(
+        recordings=pulse_recording,
+        max_early_ms=80.0,
+        n_echoes=6,
+    )
+    if isinstance(fit, dict):
+        fit["inversion_stage2"] = "echo_structure"
+    return fit
+
+
+def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
+    gen = create_generator(cfg)
+    fit_stage1 = _run_stage1_statistical_inversion(gen, cfg, pulse_recording)
+    fit_stage2 = _run_stage2_echo_structure_inversion(gen, pulse_recording)
+    fit = _merge_fit_dicts(fit_stage1, fit_stage2)
 
     gen = _apply_conservative_postfit_clamp(gen, cfg)
+    gen.fitted = fit
     return gen, fit

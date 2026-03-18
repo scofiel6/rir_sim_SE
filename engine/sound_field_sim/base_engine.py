@@ -7,10 +7,19 @@ from pyroomacoustics.directivities import Cardioid, DirectionVector
 from scipy.interpolate import interp1d
 from scipy.signal import butter, fftconvolve, sosfilt
 
+from config import (
+    DEFAULT_LATE_TAIL_HIGHPASS_HZ,
+    DEFAULT_MATERIAL_FACE_CATEGORY_GROUPS,
+    DEFAULT_MATERIAL_LIBRARY,
+    DEFAULT_MODE_FMAX_HZ,
+    DEFAULT_MODE_FMIN_HZ,
+    DEFAULT_MODE_N_MAX,
+    DEFAULT_MODE_N_MIN,
+    DEFAULT_MODE_REL_DB_MAX,
+    DEFAULT_MODE_REL_DB_MIN,
+    DEFAULT_SOUND_SPEED_M_S,
+)
 from utils import to_mono
-
-
-C = 343
 
 
 def add_low_freq_modes(
@@ -18,11 +27,11 @@ def add_low_freq_modes(
     fs,
     room_dim,
     rt60,
-    fmin=40,
-    fmax=200,
-    n_modes_range=(3, 8),
-    rel_db_range=(-25, -15),
-    c=343.0,
+    fmin,
+    fmax,
+    n_modes_range,
+    rel_db_range,
+    sound_speed_m_s,
     rng=None,
     return_meta=False,
 ):
@@ -32,9 +41,9 @@ def add_low_freq_modes(
 
     cand = []
     for room_len in (lx, ly, lz):
-        n_max = int(np.floor(2 * fmax * room_len / c))
+        n_max = int(np.floor(2 * fmax * room_len / sound_speed_m_s))
         for n in range(1, max(2, n_max + 1)):
-            freq = (c / 2.0) * (n / room_len)
+            freq = (sound_speed_m_s / 2.0) * (n / room_len)
             if fmin <= freq <= fmax:
                 cand.append(freq)
 
@@ -106,46 +115,6 @@ class SoftCardioid(Cardioid):
         return self.alpha + (1 - self.alpha) * base
 
 
-MATERIAL_LIBRARY = {
-    "painted_wall": {
-        "absorption": [0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
-        "scattering": [0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22],
-    },
-    "gypsum_board": {
-        "absorption": [0.10, 0.10, 0.08, 0.07, 0.06, 0.05, 0.05],
-        "scattering": [0.08, 0.10, 0.12, 0.14, 0.16, 0.18, 0.20],
-    },
-    "concrete": {
-        "absorption": [0.01, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02],
-        "scattering": [0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16],
-    },
-    "glass": {
-        "absorption": [0.03, 0.03, 0.03, 0.04, 0.05, 0.06, 0.06],
-        "scattering": [0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
-    },
-    "curtain_heavy": {
-        "absorption": [0.15, 0.25, 0.40, 0.55, 0.65, 0.70, 0.72],
-        "scattering": [0.12, 0.14, 0.16, 0.20, 0.24, 0.30, 0.36],
-    },
-    "carpet_floor": {
-        "absorption": [0.08, 0.12, 0.20, 0.30, 0.40, 0.50, 0.55],
-        "scattering": [0.10, 0.14, 0.18, 0.22, 0.26, 0.32, 0.36],
-    },
-    "wood_floor": {
-        "absorption": [0.05, 0.06, 0.08, 0.10, 0.11, 0.12, 0.12],
-        "scattering": [0.08, 0.10, 0.12, 0.16, 0.20, 0.24, 0.28],
-    },
-    "acoustic_tile_ceiling": {
-        "absorption": [0.30, 0.45, 0.65, 0.75, 0.75, 0.70, 0.65],
-        "scattering": [0.18, 0.22, 0.28, 0.34, 0.38, 0.40, 0.42],
-    },
-    "plaster_ceiling": {
-        "absorption": [0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16],
-        "scattering": [0.10, 0.12, 0.14, 0.18, 0.22, 0.26, 0.30],
-    },
-}
-
-
 def _weighted_scattering_scalar(scattering_curve, center_freqs):
     s = np.asarray(scattering_curve, dtype=np.float64)
     f = np.asarray(center_freqs, dtype=np.float64)
@@ -153,10 +122,13 @@ def _weighted_scattering_scalar(scattering_curve, center_freqs):
     return float(np.clip(np.average(s, weights=w), 0.05, 0.95))
 
 
-def _sample_face_categories(rng):
-    wall_candidates = ["painted_wall", "gypsum_board", "concrete", "glass", "curtain_heavy"]
-    floor_candidates = ["carpet_floor", "wood_floor"]
-    ceil_candidates = ["acoustic_tile_ceiling", "plaster_ceiling"]
+def _sample_face_categories(rng, face_category_groups=None):
+    groups = face_category_groups or DEFAULT_MATERIAL_FACE_CATEGORY_GROUPS
+    wall_candidates = list(groups.get("wall", ()))
+    floor_candidates = list(groups.get("floor", ()))
+    ceil_candidates = list(groups.get("ceiling", ()))
+    if len(wall_candidates) == 0 or len(floor_candidates) == 0 or len(ceil_candidates) == 0:
+        raise ValueError("material_face_category_groups must define non-empty wall/floor/ceiling candidates")
     return {
         "west": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
         "east": wall_candidates[int(rng.integers(0, len(wall_candidates)))],
@@ -167,12 +139,15 @@ def _sample_face_categories(rng):
     }
 
 
-def _build_materials_from_library(center_freqs, alpha_mean, face_categories, rng):
+def _build_materials_from_library(center_freqs, alpha_mean, face_categories, rng, material_library=None):
+    library = material_library or DEFAULT_MATERIAL_LIBRARY
     materials = {}
     trace = {}
     coeff_stack = []
     for face, cat in face_categories.items():
-        base = MATERIAL_LIBRARY[cat]
+        if cat not in library:
+            raise KeyError(f"Unknown material category: {cat}")
+        base = library[cat]
         abs_base = np.asarray(base["absorption"], dtype=np.float64)
         scat_base = np.asarray(base["scattering"], dtype=np.float64)
 
@@ -199,7 +174,18 @@ def _build_materials_from_library(center_freqs, alpha_mean, face_categories, rng
     return materials, trace, np.mean(np.stack(coeff_stack, axis=0), axis=0)
 
 
-def _sample_common_room_params(lx, ly, lz, fs, rng, rt60_target):
+def _sample_common_room_params(
+    lx,
+    ly,
+    lz,
+    fs,
+    rng,
+    rt60_target,
+    material_library=None,
+    face_category_groups=None,
+    sound_speed_m_s=None,
+):
+    c = float(DEFAULT_SOUND_SPEED_M_S if sound_speed_m_s is None else sound_speed_m_s)
     center_freqs = np.array([125, 250, 500, 1000, 2000, 4000, 8000], dtype=np.float64)
     room_dim = [float(lx), float(ly), float(lz)]
     rt60_value = float(rng.uniform(0.1, 1.0) if rt60_target is None else rt60_target)
@@ -208,15 +194,16 @@ def _sample_common_room_params(lx, ly, lz, fs, rng, rt60_target):
     surface = float(2.0 * (lx * ly + lx * lz + ly * lz))
     alpha_mean = float(np.clip(0.161 * volume / max(surface * rt60_value, 1e-6), 0.03, 0.75))
 
-    face_categories = _sample_face_categories(rng)
+    face_categories = _sample_face_categories(rng, face_category_groups=face_category_groups)
     materials, material_trace, alpha_bar = _build_materials_from_library(
         center_freqs=center_freqs,
         alpha_mean=alpha_mean,
         face_categories=face_categories,
         rng=rng,
+        material_library=material_library,
     )
     alpha_continuous = interp1d(np.log(center_freqs), alpha_bar, kind="linear", fill_value="extrapolate")
-    max_order = int(np.clip(np.ceil(C * float(rng.uniform(0.06, 0.12)) / max(min(room_dim), 1e-6)), 5, 40))
+    max_order = int(np.clip(np.ceil(c * float(rng.uniform(0.06, 0.12)) / max(min(room_dim), 1e-6)), 5, 40))
 
     return {
         "room_dim": room_dim,
@@ -230,7 +217,17 @@ def _sample_common_room_params(lx, ly, lz, fs, rng, rt60_target):
     }
 
 
-def sample_room_params(lx, ly, lz, fs=32000, rng=None, rt60_target=None):
+def sample_room_params(
+    lx,
+    ly,
+    lz,
+    fs=32000,
+    rng=None,
+    rt60_target=None,
+    material_library=None,
+    face_category_groups=None,
+    sound_speed_m_s=None,
+):
     rng = np.random.default_rng(0) if rng is None else rng
     return _sample_common_room_params(
         lx=lx,
@@ -239,6 +236,9 @@ def sample_room_params(lx, ly, lz, fs=32000, rng=None, rt60_target=None):
         fs=fs,
         rng=rng,
         rt60_target=rt60_target,
+        material_library=material_library,
+        face_category_groups=face_category_groups,
+        sound_speed_m_s=sound_speed_m_s,
     )
 
 
@@ -252,10 +252,12 @@ def simulate_rir_with_params(
     fs,
     params,
     rng=None,
+    sound_speed_m_s=None,
 ):
     rng = np.random.default_rng(0) if rng is None else rng
     rt60_target = params["RT60_target"]
     alpha_continuous = params["alpha_continuous"]
+    c = float(params.get("sound_speed_m_s", DEFAULT_SOUND_SPEED_M_S if sound_speed_m_s is None else sound_speed_m_s))
 
     room = pra.ShoeBox(
         [lx, ly, lz],
@@ -296,10 +298,10 @@ def simulate_rir_with_params(
     alpha_f = np.clip(alpha_continuous(np.log(np.clip(freqs, 50, fs / 2))), 0.02, 0.99)
     tail = np.fft.irfft(noise_f * _tail_decay_shape_from_alpha(alpha_f), n=len(noise))
     tail *= np.exp(-6.9 * np.arange(len(noise)) / (rt60_target * fs))
-    tail = apply_highpass(tail, fs, cutoff=40)
+    tail = apply_highpass(tail, fs, cutoff=float(params.get("late_tail_highpass_hz", DEFAULT_LATE_TAIL_HIGHPASS_HZ)))
 
-    mode_n_range = params.get("mode_n_range", [3, 8])
-    mode_rel_db_range = params.get("mode_rel_db_range", [-38.0, -30.0])
+    mode_n_range = params.get("mode_n_range", [DEFAULT_MODE_N_MIN, DEFAULT_MODE_N_MAX])
+    mode_rel_db_range = params.get("mode_rel_db_range", [DEFAULT_MODE_REL_DB_MIN, DEFAULT_MODE_REL_DB_MAX])
     n0, n1 = sorted((int(mode_n_range[0]), int(mode_n_range[1])))
     r0, r1 = sorted((float(mode_rel_db_range[0]), float(mode_rel_db_range[1])))
     tail, mode_meta = add_low_freq_modes(
@@ -307,10 +309,11 @@ def simulate_rir_with_params(
         fs,
         room_dim=(lx, ly, lz),
         rt60=rt60_target,
-        fmin=float(params.get("mode_fmin_hz", 40.0)),
-        fmax=float(params.get("mode_fmax_hz", 800.0)),
+        fmin=float(params.get("mode_fmin_hz", DEFAULT_MODE_FMIN_HZ)),
+        fmax=float(params.get("mode_fmax_hz", DEFAULT_MODE_FMAX_HZ)),
         n_modes_range=(n0, n1),
         rel_db_range=(r0, r1),
+        sound_speed_m_s=c,
         rng=rng,
         return_meta=True,
     )
@@ -418,19 +421,32 @@ class BaseEngine:
             [0.22, 0.24, 0.26, 0.30, 0.34, 0.40, 0.48, 0.54, 0.58],
             dtype=np.float64,
         )
+        self.material_library = {
+            name: {
+                "absorption": tuple(float(v) for v in spec["absorption"]),
+                "scattering": tuple(float(v) for v in spec["scattering"]),
+            }
+            for name, spec in DEFAULT_MATERIAL_LIBRARY.items()
+        }
+        self.material_face_category_groups = {
+            face_type: tuple(str(v) for v in names)
+            for face_type, names in DEFAULT_MATERIAL_FACE_CATEGORY_GROUPS.items()
+        }
         self.material_face_absorption_scale = {
             "west": 1.0, "east": 1.0, "south": 1.0, "north": 1.0, "floor": 1.0, "ceiling": 1.0
         }
         self.material_face_scattering_scale = {
             "west": 1.0, "east": 1.0, "south": 1.0, "north": 1.0, "floor": 1.0, "ceiling": 1.0
         }
+        self.sound_speed_m_s = float(DEFAULT_SOUND_SPEED_M_S)
+        self.late_tail_highpass_hz = float(DEFAULT_LATE_TAIL_HIGHPASS_HZ)
         # Low-frequency modal controls (overridden from cfg).
-        self.mode_fmin_hz = 40.0
-        self.mode_fmax_hz = 800.0
-        self.mode_n_min = 3
-        self.mode_n_max = 8
-        self.mode_rel_db_min = -38.0
-        self.mode_rel_db_max = -30.0
+        self.mode_fmin_hz = float(DEFAULT_MODE_FMIN_HZ)
+        self.mode_fmax_hz = float(DEFAULT_MODE_FMAX_HZ)
+        self.mode_n_min = int(DEFAULT_MODE_N_MIN)
+        self.mode_n_max = int(DEFAULT_MODE_N_MAX)
+        self.mode_rel_db_min = float(DEFAULT_MODE_REL_DB_MIN)
+        self.mode_rel_db_max = float(DEFAULT_MODE_REL_DB_MAX)
 
         # Updated by fit_from_recordings(...)
         self.fitted = None
@@ -783,7 +799,7 @@ class BaseEngine:
 
     def _direct_ref(self, src_xyz, mic_xyz, n_samples):
         dist = float(np.linalg.norm(np.asarray(src_xyz) - np.asarray(mic_xyz)))
-        delay_samp = int(round(dist / C * self.fs))
+        delay_samp = int(round(dist / float(self.sound_speed_m_s) * self.fs))
         ref = np.zeros(n_samples, dtype=np.float64)
         if delay_samp < n_samples:
             ref[delay_samp] = 1.0 / max(dist, 1e-3)
@@ -1132,6 +1148,39 @@ class BaseEngine:
             return float(np.median(rt))
         return self._estimate_rt60_schroeder(x, fs_hz=fs_use, noise_comp=True)
 
+    def _estimate_edt_from_impulse(self, x, fs_hz=None):
+        fs_use = int(self.fs if fs_hz is None else fs_hz)
+        seg, _ = self._extract_impulse_segment(x, fs_hz=fs_use, pre_ms=2.0, tail_s=0.8)
+        if seg.size < max(64, int(0.08 * fs_use)):
+            return None
+
+        peak_i = int(np.argmax(np.abs(seg)))
+        decay = seg[peak_i:]
+        if decay.size < max(64, int(0.06 * fs_use)):
+            return None
+
+        decay = decay - np.mean(decay[-max(16, int(0.05 * decay.size)):])
+        e = decay * decay
+        if np.max(e) <= 1e-12:
+            return None
+
+        edc = np.cumsum(e[::-1])[::-1]
+        edc = edc / (np.max(edc) + 1e-12)
+        db = 10.0 * np.log10(np.maximum(edc, 1e-12))
+        t = np.arange(db.size, dtype=np.float64) / float(fs_use)
+
+        m = (db <= -0.5) & (db >= -10.0)
+        if np.count_nonzero(m) < 12:
+            return None
+        slope, _ = np.polyfit(t[m], db[m], 1)
+        if slope >= -1e-3:
+            return None
+
+        edt = -60.0 / slope
+        if not np.isfinite(edt):
+            return None
+        return float(np.clip(edt, 0.05, 3.0))
+
     def _bandpass(self, x, f1, f2, fs_hz=None):
         fs_use = int(self.fs if fs_hz is None else fs_hz)
         x = np.asarray(x, dtype=np.float64)
@@ -1161,6 +1210,224 @@ class BaseEngine:
         med = np.nanmedian(out)
         out = np.where(np.isfinite(out), out, med)
         return np.clip(out, 0.08, 3.0)
+
+    def _estimate_band_edt_from_recording(self, x, band_centers=None, fs_hz=None):
+        fs_use = int(self.fs if fs_hz is None else fs_hz)
+        centers = self.band_centers_ref if band_centers is None else np.asarray(band_centers, dtype=np.float64)
+        out = []
+        for fc in centers:
+            f1 = fc / np.sqrt(2.0)
+            f2 = fc * np.sqrt(2.0)
+            xb = self._bandpass(x, f1, f2, fs_hz=fs_use)
+            est = self._estimate_edt_from_impulse(xb, fs_hz=fs_use)
+            out.append(np.nan if est is None else float(est))
+        out = np.asarray(out, dtype=np.float64)
+        if np.all(~np.isfinite(out)):
+            return None
+        finite = out[np.isfinite(out)]
+        med = float(np.median(finite))
+        out = np.where(np.isfinite(out), out, med)
+        return np.clip(out, 0.05, 3.0)
+
+    def _find_direct_path_idx(self, x, fs_hz=None, search_ms=30.0):
+        fs_use = int(self.fs if fs_hz is None else fs_hz)
+        arr = np.asarray(x, dtype=np.float64).reshape(-1)
+        if arr.size == 0:
+            return 0
+        n_search = min(arr.size, max(16, int(round(float(search_ms) * 1e-3 * fs_use))))
+        return int(np.argmax(np.abs(arr[:n_search])))
+
+    def _estimate_early_echoes_from_impulse(
+        self,
+        x,
+        fs_hz=None,
+        max_early_ms=80.0,
+        n_echoes=6,
+        min_gap_ms=1.0,
+        min_rel_db=-35.0,
+        guard_ms=0.4,
+    ):
+        fs_use = int(self.fs if fs_hz is None else fs_hz)
+        arr = np.asarray(x, dtype=np.float64).reshape(-1)
+        if arr.size == 0:
+            return None
+
+        direct_idx = self._find_direct_path_idx(arr, fs_hz=fs_use)
+        direct_amp = float(np.abs(arr[direct_idx]))
+        if direct_amp <= 1e-12:
+            return None
+
+        start = min(arr.size, direct_idx + int(round(float(guard_ms) * 1e-3 * fs_use)))
+        stop = min(arr.size, direct_idx + int(round(float(max_early_ms) * 1e-3 * fs_use)))
+        if stop <= start:
+            return {
+                "direct_path_time_ms": float(1000.0 * direct_idx / fs_use),
+                "early_echo_count_50ms": 0,
+                "early_echo_count_80ms": 0,
+                "echo_density_50ms": 0.0,
+                "echoes": [],
+            }
+
+        region_abs = np.abs(arr)
+        min_gap = max(1, int(round(float(min_gap_ms) * 1e-3 * fs_use)))
+        chosen = []
+        order = np.argsort(region_abs[start:stop])[::-1]
+        for idx_rel in order:
+            amp = float(region_abs[start + idx_rel])
+            if amp <= 0.0:
+                break
+            rel_db = float(20.0 * np.log10(max(amp, 1e-12) / direct_amp))
+            if rel_db < float(min_rel_db):
+                break
+
+            idx = int(start + idx_rel)
+            if idx > 0 and amp < float(region_abs[idx - 1]):
+                continue
+            if idx + 1 < arr.size and amp < float(region_abs[idx + 1]):
+                continue
+            if any(abs(idx - p["sample_idx"]) < min_gap for p in chosen):
+                continue
+
+            chosen.append({
+                "sample_idx": idx,
+                "toa_ms": float(1000.0 * (idx - direct_idx) / fs_use),
+                "rel_db": rel_db,
+            })
+            if len(chosen) >= int(n_echoes):
+                break
+
+        chosen = sorted(chosen, key=lambda p: p["sample_idx"])
+        echoes = [{"rank": i + 1, "toa_ms": p["toa_ms"], "rel_db": p["rel_db"]} for i, p in enumerate(chosen)]
+        count_50 = int(np.count_nonzero([p["toa_ms"] <= 50.0 for p in chosen]))
+        count_80 = int(np.count_nonzero([p["toa_ms"] <= 80.0 for p in chosen]))
+        return {
+            "direct_path_time_ms": float(1000.0 * direct_idx / fs_use),
+            "early_echo_count_50ms": count_50,
+            "early_echo_count_80ms": count_80,
+            "echo_density_50ms": float(count_50 / 0.05),
+            "echoes": echoes,
+        }
+
+    @staticmethod
+    def _aggregate_ranked_echoes(echo_lists, n_echoes):
+        toa_med = []
+        rel_db_med = []
+        for rank in range(int(n_echoes)):
+            rank_toa = []
+            rank_rel = []
+            for echoes in echo_lists:
+                if len(echoes) <= rank:
+                    continue
+                rank_toa.append(float(echoes[rank]["toa_ms"]))
+                rank_rel.append(float(echoes[rank]["rel_db"]))
+            if len(rank_toa) == 0:
+                break
+            toa_med.append(float(np.median(np.asarray(rank_toa, dtype=np.float64))))
+            rel_db_med.append(float(np.median(np.asarray(rank_rel, dtype=np.float64))))
+        return toa_med, rel_db_med
+
+    def analyze_reflection_structure_from_recordings(
+        self,
+        recordings,
+        max_early_ms=80.0,
+        n_echoes=6,
+    ):
+        items = self._resolve_audio_items(recordings, "recordings")
+        ny_target = 0.48 * float(self.fs)
+        fit_band_mask = self.band_centers_ref <= ny_target
+        fit_band_centers = self.band_centers_ref[fit_band_mask]
+
+        direct_times = []
+        echo_count_50 = []
+        echo_count_80 = []
+        echo_density_50 = []
+        echo_lists = []
+        edt_band_vals = []
+        n_used = 0
+        warnings = []
+
+        for item in items:
+            x, fs_item, _ = self._load_audio_mono_keep_fs(item)
+            if x.size < max(128, int(0.2 * fs_item)):
+                continue
+
+            ir_seg, _ = self._extract_impulse_segment(x, fs_hz=fs_item, pre_ms=3.0, tail_s=1.2)
+            if not self._is_impulse_like(ir_seg, fs_hz=fs_item):
+                continue
+
+            echo_fit = self._estimate_early_echoes_from_impulse(
+                ir_seg,
+                fs_hz=fs_item,
+                max_early_ms=float(max_early_ms),
+                n_echoes=int(n_echoes),
+            )
+            if echo_fit is None:
+                continue
+
+            edt_partial = self._estimate_band_edt_from_recording(
+                ir_seg,
+                band_centers=fit_band_centers,
+                fs_hz=fs_item,
+            )
+            if edt_partial is not None:
+                edt_full = np.full_like(self.band_centers_ref, np.nan, dtype=np.float64)
+                edt_full[fit_band_mask] = np.asarray(edt_partial, dtype=np.float64)
+                edt_band_vals.append(edt_full)
+
+            n_used += 1
+            direct_times.append(float(echo_fit["direct_path_time_ms"]))
+            echo_count_50.append(int(echo_fit["early_echo_count_50ms"]))
+            echo_count_80.append(int(echo_fit["early_echo_count_80ms"]))
+            echo_density_50.append(float(echo_fit["echo_density_50ms"]))
+            echo_lists.append(list(echo_fit["echoes"]))
+
+        if n_used == 0:
+            warnings.append("No impulse-like recordings available for early-echo structure analysis.")
+            return {
+                "echo_analysis_version": 1,
+                "echo_analysis_n_used": 0,
+                "echo_analysis_max_early_ms": float(max_early_ms),
+                "echo_analysis_n_echoes": int(n_echoes),
+                "direct_path_time_ms_median": None,
+                "early_echo_count_50ms_median": None,
+                "early_echo_count_80ms_median": None,
+                "echo_density_50ms_median": None,
+                "early_echo_toa_ms_median": [],
+                "early_echo_rel_db_median": [],
+                "edt_band_median": None,
+                "warnings": warnings,
+            }
+
+        edt_band_median = None
+        if len(edt_band_vals) > 0:
+            edt_mat = np.asarray(edt_band_vals, dtype=np.float64)
+            med = np.full(edt_mat.shape[1], np.nan, dtype=np.float64)
+            for i in range(edt_mat.shape[1]):
+                col = edt_mat[:, i]
+                col = col[np.isfinite(col)]
+                if col.size > 0:
+                    med[i] = float(np.median(col))
+            valid_idx = np.where(np.isfinite(med))[0]
+            if valid_idx.size > 0:
+                all_idx = np.arange(med.size)
+                med = np.interp(all_idx, valid_idx, med[valid_idx]).astype(np.float64)
+                edt_band_median = med.tolist()
+
+        toa_med, rel_db_med = self._aggregate_ranked_echoes(echo_lists, n_echoes=n_echoes)
+        return {
+            "echo_analysis_version": 1,
+            "echo_analysis_n_used": int(n_used),
+            "echo_analysis_max_early_ms": float(max_early_ms),
+            "echo_analysis_n_echoes": int(n_echoes),
+            "direct_path_time_ms_median": float(np.median(np.asarray(direct_times, dtype=np.float64))),
+            "early_echo_count_50ms_median": int(np.median(np.asarray(echo_count_50, dtype=np.float64))),
+            "early_echo_count_80ms_median": int(np.median(np.asarray(echo_count_80, dtype=np.float64))),
+            "echo_density_50ms_median": float(np.median(np.asarray(echo_density_50, dtype=np.float64))),
+            "early_echo_toa_ms_median": toa_med,
+            "early_echo_rel_db_median": rel_db_med,
+            "edt_band_median": edt_band_median,
+            "warnings": warnings,
+        }
 
     def _estimate_noise_stats(self, x, fs_hz=None):
         """
@@ -1604,6 +1871,9 @@ class BaseEngine:
             fs=int(self.fs),
             rng=rng,
             rt60_target=float(rt60_tgt),
+            material_library=getattr(self, "material_library", None),
+            face_category_groups=getattr(self, "material_face_category_groups", None),
+            sound_speed_m_s=float(getattr(self, "sound_speed_m_s", DEFAULT_SOUND_SPEED_M_S)),
         )
         # Per-sample band profile randomization for SE robustness.
         fc = self._jitter_band_centers(rng)
@@ -1620,8 +1890,10 @@ class BaseEngine:
             rel_hi = float(getattr(self, "mode_rel_db_max", -30.0))
             if rel_hi < rel_lo:
                 rel_lo, rel_hi = rel_hi, rel_lo
-            params["mode_fmin_hz"] = float(getattr(self, "mode_fmin_hz", 40.0))
-            params["mode_fmax_hz"] = float(getattr(self, "mode_fmax_hz", 800.0))
+            params["sound_speed_m_s"] = float(getattr(self, "sound_speed_m_s", DEFAULT_SOUND_SPEED_M_S))
+            params["late_tail_highpass_hz"] = float(getattr(self, "late_tail_highpass_hz", DEFAULT_LATE_TAIL_HIGHPASS_HZ))
+            params["mode_fmin_hz"] = float(getattr(self, "mode_fmin_hz", DEFAULT_MODE_FMIN_HZ))
+            params["mode_fmax_hz"] = float(getattr(self, "mode_fmax_hz", DEFAULT_MODE_FMAX_HZ))
             params["mode_n_range"] = [int(n_min), int(n_max)]
             params["mode_rel_db_range"] = [float(rel_lo), float(rel_hi)]
 
@@ -1650,6 +1922,7 @@ class BaseEngine:
                 fs=int(self.fs),
                 params=params,
                 rng=rng,
+                sound_speed_m_s=float(getattr(self, "sound_speed_m_s", DEFAULT_SOUND_SPEED_M_S)),
             )
             if isinstance(out, tuple):
                 rir = out[0]

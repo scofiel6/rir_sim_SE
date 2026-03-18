@@ -133,6 +133,20 @@ def _compact_fit_for_state(fit):
         "fitted_custom_room_range",
         "drr_c50_mode_requested",
         "drr_c50_mode_effective",
+        "inversion_stage1",
+        "inversion_stage2",
+        "echo_analysis_version",
+        "echo_analysis_n_used",
+        "echo_analysis_max_early_ms",
+        "echo_analysis_n_echoes",
+        "direct_path_time_ms_median",
+        "early_echo_count_50ms_median",
+        "early_echo_count_80ms_median",
+        "echo_density_50ms_median",
+        "early_echo_toa_ms_median",
+        "early_echo_rel_db_median",
+        "edt_band_median",
+        "warnings",
     ]
     out = {}
     for k in keep_keys:

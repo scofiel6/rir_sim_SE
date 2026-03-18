@@ -1,9 +1,63 @@
 import json
+import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 RoomRange = Dict[str, Tuple[float, float]]
+DEFAULT_SOUND_SPEED_M_S = 343.0
+DEFAULT_LATE_TAIL_HIGHPASS_HZ = 40.0
+DEFAULT_MODE_FMIN_HZ = 40.0
+DEFAULT_MODE_FMAX_HZ = 800.0
+DEFAULT_MODE_N_MIN = 3
+DEFAULT_MODE_N_MAX = 8
+DEFAULT_MODE_REL_DB_MIN = -38.0
+DEFAULT_MODE_REL_DB_MAX = -30.0
+
+DEFAULT_MATERIAL_LIBRARY = {
+    "painted_wall": {
+        "absorption": (0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18),
+        "scattering": (0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22),
+    },
+    "gypsum_board": {
+        "absorption": (0.10, 0.10, 0.08, 0.07, 0.06, 0.05, 0.05),
+        "scattering": (0.08, 0.10, 0.12, 0.14, 0.16, 0.18, 0.20),
+    },
+    "concrete": {
+        "absorption": (0.01, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02),
+        "scattering": (0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16),
+    },
+    "glass": {
+        "absorption": (0.03, 0.03, 0.03, 0.04, 0.05, 0.06, 0.06),
+        "scattering": (0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18),
+    },
+    "curtain_heavy": {
+        "absorption": (0.15, 0.25, 0.40, 0.55, 0.65, 0.70, 0.72),
+        "scattering": (0.12, 0.14, 0.16, 0.20, 0.24, 0.30, 0.36),
+    },
+    "carpet_floor": {
+        "absorption": (0.08, 0.12, 0.20, 0.30, 0.40, 0.50, 0.55),
+        "scattering": (0.10, 0.14, 0.18, 0.22, 0.26, 0.32, 0.36),
+    },
+    "wood_floor": {
+        "absorption": (0.05, 0.06, 0.08, 0.10, 0.11, 0.12, 0.12),
+        "scattering": (0.08, 0.10, 0.12, 0.16, 0.20, 0.24, 0.28),
+    },
+    "acoustic_tile_ceiling": {
+        "absorption": (0.30, 0.45, 0.65, 0.75, 0.75, 0.70, 0.65),
+        "scattering": (0.18, 0.22, 0.28, 0.34, 0.38, 0.40, 0.42),
+    },
+    "plaster_ceiling": {
+        "absorption": (0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16),
+        "scattering": (0.10, 0.12, 0.14, 0.18, 0.22, 0.26, 0.30),
+    },
+}
+
+DEFAULT_MATERIAL_FACE_CATEGORY_GROUPS = {
+    "wall": ("painted_wall", "gypsum_board", "concrete", "glass", "curtain_heavy"),
+    "floor": ("carpet_floor", "wood_floor"),
+    "ceiling": ("acoustic_tile_ceiling", "plaster_ceiling"),
+}
 
 
 def _to_float_tuple(x, fallback):
@@ -30,6 +84,35 @@ def _normalize_scale_dict(x):
     return {str(k): float(v) for k, v in dict(x).items()}
 
 
+def _normalize_material_library(x):
+    if x is None:
+        x = DEFAULT_MATERIAL_LIBRARY
+    out = {}
+    for name, spec in dict(x).items():
+        spec_d = dict(spec)
+        absorption = tuple(float(v) for v in list(spec_d.get("absorption", [])))
+        scattering = tuple(float(v) for v in list(spec_d.get("scattering", [])))
+        if len(absorption) == 0 or len(scattering) == 0:
+            continue
+        out[str(name)] = {
+            "absorption": absorption,
+            "scattering": scattering,
+        }
+    return out
+
+
+def _normalize_material_face_category_groups(x):
+    if x is None:
+        x = DEFAULT_MATERIAL_FACE_CATEGORY_GROUPS
+    out = {}
+    for face_type, names in dict(x).items():
+        vals = tuple(str(v) for v in list(names) if str(v).strip())
+        if len(vals) == 0:
+            continue
+        out[str(face_type)] = vals
+    return out
+
+
 def _resolve_path_near(base_dir, p):
     if p is None:
         return None
@@ -37,6 +120,12 @@ def _resolve_path_near(base_dir, p):
     if pp.is_absolute():
         return str(pp)
     return str((Path(base_dir) / pp).resolve())
+
+
+def _load_json_with_line_comments(path: Path):
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r"(?m)^\s*//.*$", "", text)
+    return json.loads(text)
 
 
 @dataclass
@@ -91,14 +180,21 @@ class RIRSimSEConfig:
     material_face_scattering_scale: Dict[str, float] = field(default_factory=lambda: {
         "west": 1.00, "east": 1.00, "south": 1.00, "north": 1.00, "floor": 1.00, "ceiling": 1.00
     })
+    material_library: Dict[str, Dict[str, Tuple[float, ...]]] = field(default_factory=lambda: _normalize_material_library(None))
+    material_face_category_groups: Dict[str, Tuple[str, ...]] = field(default_factory=lambda: _normalize_material_face_category_groups(None))
 
-    # Low-frequency modal tail controls for the base engine.
-    mode_fmin_hz: float = 40.0
-    mode_fmax_hz: float = 800.0
-    mode_n_min: int = 3
-    mode_n_max: int = 8
-    mode_rel_db_min: float = -38.0
-    mode_rel_db_max: float = -30.0
+    # Physical propagation prior used by delay, modal frequency, and ISM order heuristics.
+    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S
+    # High-pass used on the synthetic late tail before modal augmentation.
+    late_tail_highpass_hz: float = DEFAULT_LATE_TAIL_HIGHPASS_HZ
+    # Low-frequency modal tail priors used by the engine.
+    # These are the single source of truth for modal augmentation defaults.
+    mode_fmin_hz: float = DEFAULT_MODE_FMIN_HZ
+    mode_fmax_hz: float = DEFAULT_MODE_FMAX_HZ
+    mode_n_min: int = DEFAULT_MODE_N_MIN
+    mode_n_max: int = DEFAULT_MODE_N_MAX
+    mode_rel_db_min: float = DEFAULT_MODE_REL_DB_MIN
+    mode_rel_db_max: float = DEFAULT_MODE_REL_DB_MAX
 
     # Optional device EQ on generated RIR/ref outputs.
     # Default is flat (all 0 dB), so it does not alter signals.
@@ -139,7 +235,7 @@ class RIRSimSEConfig:
             if k in d:
                 d[k] = tuple(float(v) for v in list(d[k]))
 
-        for k in ("mode_fmin_hz", "mode_fmax_hz", "mode_rel_db_min", "mode_rel_db_max"):
+        for k in ("sound_speed_m_s", "late_tail_highpass_hz", "mode_fmin_hz", "mode_fmax_hz", "mode_rel_db_min", "mode_rel_db_max"):
             if k in d:
                 d[k] = float(d[k])
         for k in ("mode_n_min", "mode_n_max"):
@@ -150,6 +246,10 @@ class RIRSimSEConfig:
             d["material_face_absorption_scale"] = _normalize_scale_dict(d["material_face_absorption_scale"])
         if "material_face_scattering_scale" in d:
             d["material_face_scattering_scale"] = _normalize_scale_dict(d["material_face_scattering_scale"])
+        if "material_library" in d:
+            d["material_library"] = _normalize_material_library(d["material_library"])
+        if "material_face_category_groups" in d:
+            d["material_face_category_groups"] = _normalize_material_face_category_groups(d["material_face_category_groups"])
         valid = {f.name for f in fields(cls)}
         d = {k: v for k, v in d.items() if k in valid}
         return cls(**d)
@@ -160,7 +260,7 @@ class RIRSimSEConfig:
 
 def load_rir_sim_se_config(config_path):
     p = Path(config_path).resolve()
-    payload = json.loads(p.read_text(encoding="utf-8"))
+    payload = _load_json_with_line_comments(p)
     cfg = RIRSimSEConfig.from_dict(payload)
 
     base_dir = p.parent
