@@ -51,8 +51,8 @@ def main():
     base_dir = Path(__file__).resolve().parent
     cfg = load_rir_sim_se_config(base_dir / "configs" / "rir_sim_se_config.json")
     result_dir = base_dir / "outputs"
-    # state_choice = "json"  # "invert" or "json"
-    state_choice = "invert"  # "invert" or "json"
+    # Default to the checked-in acoustic state so the demo runs out of the box.
+    state_choice = "json"  # "invert" or "json"
 
     result_dir.mkdir(parents=True, exist_ok=True)
     state, state_source = _load_state(cfg, state_choice)

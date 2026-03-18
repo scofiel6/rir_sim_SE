@@ -11,6 +11,9 @@ The project has one runtime path:
 
 The physical engine lives in `engine/sound_field_sim/base_engine.py`.
 
+For the second-round repository cleanup and interface tightening notes, see
+`docs/round2_cleanup.md`.
+
 ## Runtime Flow
 
 `main.py` is the runnable demo entry.
@@ -25,6 +28,7 @@ It does three things:
 
 `main.py` also loads `cfg.dry_wav` and convolves it with the generated RIRs.
 If `cfg.dry_wav` does not exist locally, it falls back to a short synthetic dry signal so the demo still runs.
+The checked-in demo now defaults to `state_choice = "json"` so it can run without external inversion data.
 
 ## Main Files
 
@@ -57,8 +61,11 @@ It stores the parameters needed for later synthesis, such as:
 - fitted RT60 range
 - fitted band RT60 profile
 - fitted DRR/C50 ranges
-- fitted room-size range
+- echo-structure summary
 - basic recording metadata
+
+Room-size prior still comes from config by default. A future geometry inversion stage
+can add `estimated_room_range` into the saved state when that feature exists.
 
 This lets you invert once and regenerate many times without re-running fitting.
 
@@ -129,6 +136,13 @@ Important config groups:
 
 ```bash
 pip install -r requirements.txt
+```
+
+For development and tests:
+
+```bash
+pip install -r requirements-dev.txt
+python -m unittest discover -s tests -p "test_*.py" -q
 ```
 
 ## Run

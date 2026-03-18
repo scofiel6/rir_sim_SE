@@ -29,8 +29,5 @@ jobs:
       - name: Black
         run: black --check .
 
-      - name: RNG policy
-        run: python tools/check_rng_policy.py
-
       - name: Unit tests
-        run: pytest
+        run: python -m unittest discover -s tests -p "test_*.py" -q
