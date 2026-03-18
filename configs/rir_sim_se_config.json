@@ -93,6 +93,12 @@
   // These values are the single source of truth for low-frequency modal augmentation.
   "sound_speed_m_s": 343.0,
   "late_tail_highpass_hz": 40.0,
+  // Multi-band late reverb prior.
+  // break_fractions are the two piecewise slope transition points across the tail.
+  "late_reverb_bandwidth_oct": 0.9,
+  "late_reverb_break_fractions": [0.18, 0.60],
+  "late_reverb_density_scale": 1.0,
+  "late_reverb_slope_scales": [0.62, 1.0, 0.58],
   "mode_fmin_hz": 40.0,
   "mode_fmax_hz": 800.0,
   "mode_n_min": 4,

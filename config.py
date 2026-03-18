@@ -7,6 +7,10 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 RoomRange = Dict[str, Tuple[float, float]]
 DEFAULT_SOUND_SPEED_M_S = 343.0
 DEFAULT_LATE_TAIL_HIGHPASS_HZ = 40.0
+DEFAULT_LATE_REVERB_BANDWIDTH_OCT = 0.9
+DEFAULT_LATE_REVERB_BREAK_FRACTIONS = (0.18, 0.60)
+DEFAULT_LATE_REVERB_DENSITY_SCALE = 1.0
+DEFAULT_LATE_REVERB_SLOPE_SCALES = (0.62, 1.00, 0.58)
 DEFAULT_MODE_FMIN_HZ = 40.0
 DEFAULT_MODE_FMAX_HZ = 800.0
 DEFAULT_MODE_N_MIN = 3
@@ -194,6 +198,12 @@ class RIRSimSEConfig:
     sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S
     # High-pass used on the synthetic late tail before modal augmentation.
     late_tail_highpass_hz: float = DEFAULT_LATE_TAIL_HIGHPASS_HZ
+    # Multi-band late reverb synthesis priors.
+    # break_fractions define the two piecewise slope transition points over the tail.
+    late_reverb_bandwidth_oct: float = DEFAULT_LATE_REVERB_BANDWIDTH_OCT
+    late_reverb_break_fractions: Tuple[float, float] = DEFAULT_LATE_REVERB_BREAK_FRACTIONS
+    late_reverb_density_scale: float = DEFAULT_LATE_REVERB_DENSITY_SCALE
+    late_reverb_slope_scales: Tuple[float, float, float] = DEFAULT_LATE_REVERB_SLOPE_SCALES
     # Low-frequency modal tail priors used by the engine.
     # These are the single source of truth for modal augmentation defaults.
     mode_fmin_hz: float = DEFAULT_MODE_FMIN_HZ
@@ -237,6 +247,8 @@ class RIRSimSEConfig:
             "material_center_freqs_hz",
             "material_absorption_curve",
             "material_scattering_curve",
+            "late_reverb_break_fractions",
+            "late_reverb_slope_scales",
             "device_eq_centers_hz",
             "device_eq_gains_db",
         ):
@@ -245,7 +257,16 @@ class RIRSimSEConfig:
         if "mic_positions_m" in d:
             d["mic_positions_m"] = _to_optional_float_tuple(d["mic_positions_m"])
 
-        for k in ("sound_speed_m_s", "late_tail_highpass_hz", "mode_fmin_hz", "mode_fmax_hz", "mode_rel_db_min", "mode_rel_db_max"):
+        for k in (
+            "sound_speed_m_s",
+            "late_tail_highpass_hz",
+            "late_reverb_bandwidth_oct",
+            "late_reverb_density_scale",
+            "mode_fmin_hz",
+            "mode_fmax_hz",
+            "mode_rel_db_min",
+            "mode_rel_db_max",
+        ):
             if k in d:
                 d[k] = float(d[k])
         for k in ("mode_n_min", "mode_n_max"):

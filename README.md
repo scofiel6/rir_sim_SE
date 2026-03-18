@@ -114,6 +114,8 @@ Important config groups:
   `ref_early_ms`, `ref_late_tail_db`, `ref2_early_ms`, `ref2_early_taps`, `ref2_min_tap_ms`
 - Engine material profile:
   `material_center_freqs_hz`, `material_absorption_curve`, `material_scattering_curve`
+- Late reverb:
+  `late_tail_highpass_hz`, `late_reverb_bandwidth_oct`, `late_reverb_break_fractions`, `late_reverb_density_scale`, `late_reverb_slope_scales`
 - Low-frequency modal tail:
   `mode_fmin_hz`, `mode_fmax_hz`, `mode_n_min`, `mode_n_max`, `mode_rel_db_min`, `mode_rel_db_max`
 - Output device EQ:

@@ -8,6 +8,10 @@ from scipy.interpolate import interp1d
 from scipy.signal import butter, fftconvolve, sosfilt
 
 from config import (
+    DEFAULT_LATE_REVERB_BANDWIDTH_OCT,
+    DEFAULT_LATE_REVERB_BREAK_FRACTIONS,
+    DEFAULT_LATE_REVERB_DENSITY_SCALE,
+    DEFAULT_LATE_REVERB_SLOPE_SCALES,
     DEFAULT_LATE_TAIL_HIGHPASS_HZ,
     DEFAULT_MATERIAL_FACE_CATEGORY_GROUPS,
     DEFAULT_MATERIAL_LIBRARY,
@@ -99,10 +103,164 @@ def apply_highpass(sig, fs, cutoff=40):
     return sosfilt(sos, sig)
 
 
-def _tail_decay_shape_from_alpha(alpha_f):
-    alpha = np.clip(np.asarray(alpha_f, dtype=np.float64), 0.02, 0.99)
-    shape = np.sqrt(np.clip(1.0 - alpha, 1e-4, 1.0))
-    return shape / max(float(np.mean(shape)), 1e-8)
+def _log_gaussian_band_weights(freqs, center_hz, bandwidth_oct=0.9):
+    f = np.asarray(freqs, dtype=np.float64).reshape(-1)
+    if f.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    fc = float(max(1.0, center_hz))
+    bw = float(max(0.15, bandwidth_oct))
+    sigma = bw / 2.355
+    out = np.exp(-0.5 * ((np.log2(np.clip(f, 1.0, None)) - np.log2(fc)) / sigma) ** 2)
+    out[0] = 0.0
+    return out
+
+
+def _piecewise_multislope_envelope(t, rt_a, rt_b, rt_c, break_a_s, break_b_s):
+    tt = np.asarray(t, dtype=np.float64).reshape(-1)
+    if tt.size == 0:
+        return np.zeros(0, dtype=np.float64)
+
+    ra = float(max(0.03, rt_a))
+    rb = float(max(0.03, rt_b))
+    rc = float(max(0.03, rt_c))
+    ta = float(max(0.0, break_a_s))
+    tb = float(max(ta + 1e-4, break_b_s))
+
+    tau_a = ra / 6.9
+    tau_b = rb / 6.9
+    tau_c = rc / 6.9
+
+    out = np.empty_like(tt)
+    m0 = tt < ta
+    m1 = np.logical_and(tt >= ta, tt < tb)
+    m2 = tt >= tb
+
+    out[m0] = np.exp(-tt[m0] / tau_a)
+    e_a = float(np.exp(-ta / tau_a))
+    out[m1] = e_a * np.exp(-(tt[m1] - ta) / tau_b)
+    e_b = float(e_a * np.exp(-(tb - ta) / tau_b))
+    out[m2] = e_b * np.exp(-(tt[m2] - tb) / tau_c)
+    return out
+
+
+def _synthesize_multiband_late_reverb(fs, tail_len, room_dim, rt60_target, params, rng=None):
+    rng = np.random.default_rng(0) if rng is None else rng
+    n = int(max(1, tail_len))
+    t = np.arange(n, dtype=np.float64) / float(fs)
+    lx, ly, lz = [float(v) for v in room_dim]
+    volume = float(max(1e-6, lx * ly * lz))
+    surface = float(max(1e-6, 2.0 * (lx * ly + lx * lz + ly * lz)))
+    freqs = np.fft.rfftfreq(n, d=1.0 / float(fs))
+
+    fc = np.asarray(params.get("center_freqs", [125, 250, 500, 1000, 2000, 4000, 8000]), dtype=np.float64).reshape(-1)
+    if fc.size == 0:
+        fc = np.array([125, 250, 500, 1000, 2000, 4000, 8000], dtype=np.float64)
+
+    band_rt60 = params.get("band_rt60")
+    if band_rt60 is None:
+        band_rt60 = np.full(fc.shape, float(rt60_target), dtype=np.float64)
+    else:
+        band_rt60 = np.asarray(band_rt60, dtype=np.float64).reshape(-1)
+        if band_rt60.size != fc.size:
+            rt_fill = float(np.nanmedian(band_rt60)) if band_rt60.size > 0 else float(rt60_target)
+            band_rt60 = np.full(fc.shape, rt_fill, dtype=np.float64)
+
+    band_alpha = params.get("band_alpha")
+    if band_alpha is None:
+        alpha_fn = params.get("alpha_continuous")
+        if alpha_fn is None:
+            band_alpha = np.clip(0.161 * volume / (surface * np.maximum(band_rt60, 1e-4)), 0.02, 0.98)
+        else:
+            band_alpha = np.clip(alpha_fn(np.log(np.clip(fc, 50.0, float(fs) / 2.0))), 0.02, 0.98)
+    else:
+        band_alpha = np.asarray(band_alpha, dtype=np.float64).reshape(-1)
+        if band_alpha.size != fc.size:
+            alpha_fill = float(np.nanmedian(band_alpha)) if band_alpha.size > 0 else 0.25
+            band_alpha = np.full(fc.shape, alpha_fill, dtype=np.float64)
+
+    band_scat = params.get("band_scattering_curve")
+    if band_scat is None:
+        band_scat = np.full(fc.shape, 0.35, dtype=np.float64)
+    else:
+        band_scat = np.asarray(band_scat, dtype=np.float64).reshape(-1)
+        if band_scat.size != fc.size:
+            scat_fill = float(np.nanmedian(band_scat)) if band_scat.size > 0 else 0.35
+            band_scat = np.full(fc.shape, scat_fill, dtype=np.float64)
+    band_scat = np.clip(band_scat, 0.05, 0.95)
+
+    bandwidth_oct = float(params.get("late_reverb_bandwidth_oct", DEFAULT_LATE_REVERB_BANDWIDTH_OCT))
+    break_fracs = params.get("late_reverb_break_fractions", DEFAULT_LATE_REVERB_BREAK_FRACTIONS)
+    break_fracs = [float(v) for v in list(break_fracs)[:2]]
+    if len(break_fracs) < 2:
+        break_fracs = [float(DEFAULT_LATE_REVERB_BREAK_FRACTIONS[0]), float(DEFAULT_LATE_REVERB_BREAK_FRACTIONS[1])]
+    b0, b1 = sorted((break_fracs[0], break_fracs[1]))
+    density_scale = float(params.get("late_reverb_density_scale", DEFAULT_LATE_REVERB_DENSITY_SCALE))
+    slope_scales = params.get("late_reverb_slope_scales", DEFAULT_LATE_REVERB_SLOPE_SCALES)
+    slope_scales = [float(v) for v in list(slope_scales)[:3]]
+    if len(slope_scales) < 3:
+        slope_scales = [float(v) for v in DEFAULT_LATE_REVERB_SLOPE_SCALES]
+
+    reflection_rate = float(params.get("sound_speed_m_s", DEFAULT_SOUND_SPEED_M_S) * surface / max(4.0 * volume, 1e-6))
+    geom_density = float(np.clip(reflection_rate / 140.0, 0.7, 1.8))
+    tail = np.zeros(n, dtype=np.float64)
+    band_traces = []
+
+    for i, center_hz in enumerate(fc):
+        rt_band = float(np.clip(band_rt60[i], 0.06, 3.0))
+        alpha_i = float(np.clip(band_alpha[i], 0.02, 0.98))
+        scat_i = float(np.clip(band_scat[i], 0.05, 0.95))
+        freq_oct = float(max(0.0, np.log2(max(center_hz, 125.0) / 125.0)))
+        hf_air = float(max(0.0, np.log2(max(center_hz, 1000.0) / 1000.0)))
+
+        rt_a = rt_band * slope_scales[0] * (0.92 + 0.32 * scat_i)
+        rt_b = rt_band * slope_scales[1] * (0.95 + 0.16 * (1.0 - alpha_i) + 0.10 * scat_i)
+        rt_c = rt_band * slope_scales[2] * (0.86 + 0.22 * (1.0 - alpha_i) + 0.14 * scat_i) / (1.0 + 0.12 * hf_air)
+        rt_a = float(np.clip(rt_a, 0.04, 3.0))
+        rt_b = float(np.clip(rt_b, 0.05, 3.2))
+        rt_c = float(np.clip(rt_c, 0.04, 2.6))
+
+        frac_a = float(np.clip(b0 * (1.08 - 0.18 * scat_i), 0.08, 0.36))
+        frac_b = float(np.clip(b1 * (0.95 + 0.08 * scat_i - 0.05 * alpha_i), frac_a + 0.10, 0.92))
+        break_a_s = frac_a * (n / float(fs))
+        break_b_s = frac_b * (n / float(fs))
+
+        density = density_scale * geom_density * (520.0 + 2600.0 * scat_i + 180.0 * freq_oct)
+        noise = generate_velvet_noise(n, fs, density=density, rng=rng)
+        weight = _log_gaussian_band_weights(freqs, center_hz, bandwidth_oct=bandwidth_oct)
+        band = np.fft.irfft(np.fft.rfft(noise) * weight, n=n)
+        band /= np.sqrt(np.mean(band**2) + 1e-12)
+
+        diffuse_gain = (0.35 + 0.75 * scat_i) * np.sqrt(max(1.0 - alpha_i, 1e-4)) / (1.0 + 0.10 * hf_air)
+        envelope = _piecewise_multislope_envelope(t, rt_a, rt_b, rt_c, break_a_s, break_b_s)
+        band = band * diffuse_gain * envelope
+        tail += band
+
+        band_traces.append({
+            "center_hz": float(center_hz),
+            "rt60_band_s": float(rt_band),
+            "alpha": float(alpha_i),
+            "scattering": float(scat_i),
+            "density_hz": float(density),
+            "break_a_ms": float(1000.0 * break_a_s),
+            "break_b_ms": float(1000.0 * break_b_s),
+            "rt_a_s": float(rt_a),
+            "rt_b_s": float(rt_b),
+            "rt_c_s": float(rt_c),
+            "diffuse_gain": float(diffuse_gain),
+        })
+
+    tail /= np.sqrt(np.mean(tail**2) + 1e-12)
+    trace = {
+        "variant": "multiband_multi_slope_diffuse",
+        "reflection_rate_hz": float(reflection_rate),
+        "geom_density_scale": float(geom_density),
+        "bandwidth_oct": float(bandwidth_oct),
+        "break_fractions": [float(b0), float(b1)],
+        "density_scale": float(density_scale),
+        "slope_scales": [float(v) for v in slope_scales],
+        "bands": band_traces,
+    }
+    return tail, trace
 
 
 class SoftCardioid(Cardioid):
@@ -290,14 +448,14 @@ def simulate_rir_with_params(
     )
 
     tail_len = max(int(rt60_target * fs * 1.1), len(rir_ism) - split_idx)
-    noise_density = float(rng.uniform(8000, max(8001.0, 0.98 * fs)))
-    noise = generate_velvet_noise(tail_len, fs, density=noise_density, rng=rng)
-
-    noise_f = np.fft.rfft(noise)
-    freqs = np.fft.rfftfreq(len(noise), 1 / fs)
-    alpha_f = np.clip(alpha_continuous(np.log(np.clip(freqs, 50, fs / 2))), 0.02, 0.99)
-    tail = np.fft.irfft(noise_f * _tail_decay_shape_from_alpha(alpha_f), n=len(noise))
-    tail *= np.exp(-6.9 * np.arange(len(noise)) / (rt60_target * fs))
+    tail, late_reverb_trace = _synthesize_multiband_late_reverb(
+        fs=fs,
+        tail_len=tail_len,
+        room_dim=(lx, ly, lz),
+        rt60_target=rt60_target,
+        params=params,
+        rng=rng,
+    )
     tail = apply_highpass(tail, fs, cutoff=float(params.get("late_tail_highpass_hz", DEFAULT_LATE_TAIL_HIGHPASS_HZ)))
 
     mode_n_range = params.get("mode_n_range", [DEFAULT_MODE_N_MIN, DEFAULT_MODE_N_MAX])
@@ -329,7 +487,7 @@ def simulate_rir_with_params(
         "split_time_ms": float(1000.0 * split_idx / fs),
         "fade_len": int(fade_len),
         "tail_len": int(tail_len),
-        "noise_density": float(noise_density),
+        "late_reverb": late_reverb_trace,
         "max_order": int(params.get("max_order", -1)),
         "mode_meta": mode_meta,
     }
@@ -440,6 +598,10 @@ class BaseEngine:
         }
         self.sound_speed_m_s = float(DEFAULT_SOUND_SPEED_M_S)
         self.late_tail_highpass_hz = float(DEFAULT_LATE_TAIL_HIGHPASS_HZ)
+        self.late_reverb_bandwidth_oct = float(DEFAULT_LATE_REVERB_BANDWIDTH_OCT)
+        self.late_reverb_break_fractions = tuple(float(v) for v in DEFAULT_LATE_REVERB_BREAK_FRACTIONS)
+        self.late_reverb_density_scale = float(DEFAULT_LATE_REVERB_DENSITY_SCALE)
+        self.late_reverb_slope_scales = tuple(float(v) for v in DEFAULT_LATE_REVERB_SLOPE_SCALES)
         # Low-frequency modal controls (overridden from cfg).
         self.mode_fmin_hz = float(DEFAULT_MODE_FMIN_HZ)
         self.mode_fmax_hz = float(DEFAULT_MODE_FMAX_HZ)
@@ -773,6 +935,13 @@ class BaseEngine:
 
         face_abs_scale = getattr(self, "material_face_absorption_scale", None)
         face_scat_scale = getattr(self, "material_face_scattering_scale", None)
+        abs_scale_vals = np.asarray(list(dict(face_abs_scale or {}).values()), dtype=np.float64)
+        scat_scale_vals = np.asarray(list(dict(face_scat_scale or {}).values()), dtype=np.float64)
+        mean_abs_scale = float(np.mean(abs_scale_vals)) if abs_scale_vals.size > 0 else 1.0
+        mean_scat_scale = float(np.mean(scat_scale_vals)) if scat_scale_vals.size > 0 else 1.0
+        out["band_rt60"] = np.asarray(band_rt60, dtype=np.float64)
+        out["band_alpha"] = np.clip(np.asarray(alpha, dtype=np.float64) * mean_abs_scale, 0.02, 0.98)
+        out["band_scattering_curve"] = np.clip(np.asarray(scat_curve, dtype=np.float64) * mean_scat_scale, 0.05, 0.95)
         if "materials" in out:
             keys = list(out["materials"].keys())
             out["materials"] = self._to_material_dict(
@@ -1878,6 +2047,10 @@ class BaseEngine:
                 rel_lo, rel_hi = rel_hi, rel_lo
             params["sound_speed_m_s"] = float(getattr(self, "sound_speed_m_s", DEFAULT_SOUND_SPEED_M_S))
             params["late_tail_highpass_hz"] = float(getattr(self, "late_tail_highpass_hz", DEFAULT_LATE_TAIL_HIGHPASS_HZ))
+            params["late_reverb_bandwidth_oct"] = float(getattr(self, "late_reverb_bandwidth_oct", DEFAULT_LATE_REVERB_BANDWIDTH_OCT))
+            params["late_reverb_break_fractions"] = [float(v) for v in getattr(self, "late_reverb_break_fractions", DEFAULT_LATE_REVERB_BREAK_FRACTIONS)]
+            params["late_reverb_density_scale"] = float(getattr(self, "late_reverb_density_scale", DEFAULT_LATE_REVERB_DENSITY_SCALE))
+            params["late_reverb_slope_scales"] = [float(v) for v in getattr(self, "late_reverb_slope_scales", DEFAULT_LATE_REVERB_SLOPE_SCALES)]
             params["mode_fmin_hz"] = float(getattr(self, "mode_fmin_hz", DEFAULT_MODE_FMIN_HZ))
             params["mode_fmax_hz"] = float(getattr(self, "mode_fmax_hz", DEFAULT_MODE_FMAX_HZ))
             params["mode_n_range"] = [int(n_min), int(n_max)]
