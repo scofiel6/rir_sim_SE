@@ -4,7 +4,7 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import fftconvolve
 
-from utils import mono_resample_to_fs, to_mono
+from engine.sound_field_sim.utils import mono_resample_to_fs, to_mono
 
 
 def read_audio_mono(path):
@@ -35,6 +35,8 @@ def convolve_dry_rir(dry, rir):
 
 def save_wav(path, x, fs):
     p = Path(path)
+    if p.suffix == "":
+        p = p.with_suffix(".wav")
     p.parent.mkdir(parents=True, exist_ok=True)
     arr = np.asarray(x, dtype=np.float32)
     if arr.ndim == 2:

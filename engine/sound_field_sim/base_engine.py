@@ -28,7 +28,7 @@ from config import (
     DEFAULT_SOURCE_TORSO_RADIUS_M,
     DEFAULT_SOURCE_TORSO_SCATTERING_STRENGTH,
 )
-from utils import to_mono
+from engine.sound_field_sim.utils import to_mono
 
 
 def add_low_freq_modes(

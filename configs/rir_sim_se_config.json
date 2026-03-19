@@ -14,7 +14,7 @@
   "rir_seconds": 1.4,
 
   "inversion_rt60_min": 0.12,
-  "inversion_rt60_max": 0.7,
+  "inversion_rt60_max": 0.9,
   "inversion_drr_c50_mode": "from_recording",
   "inversion_drr_c50_jitter_db": 0.5,
   "inversion_drr_c50_from_recording_jitter_db": 0.2,
@@ -122,9 +122,10 @@
   // For linear arrays, mic_positions_m takes priority over mic_num/mic_spacing.
   // Example: [0.0, 0.04, 0.36, 0.40] describes a 4-ch non-uniform linear array.
   "mic_array_type": "linear",
-  "mic_num": 4,
-  "mic_positions_m": [0.0, 0.04, 0.36, 0.40],
+  "mic_num": 1,
+  // "mic_positions_m": [0.0, 0.04, 0.36, 0.40],
+  "mic_positions_m": [0.0],
   "mic_spacing": 0.04,
   "mic_radius": 0.04,
-  "mic_position_jitter_m": 0.0
+  "mic_position_jitter_m": 0.002
 }

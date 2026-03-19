@@ -49,22 +49,27 @@ def _write_outputs(result_dir, fs, dry, rir, ref1, ref2):
 
 def main():
     base_dir = Path(__file__).resolve().parent
+    save_dir = Path("/home/xukj/dataset_comsolTest/data_se/0319_")
     cfg = load_rir_sim_se_config(base_dir / "configs" / "rir_sim_se_config.json")
-    result_dir = base_dir / "outputs"
     # Default to the checked-in acoustic state so the demo runs out of the box.
     state_choice = "json"  # "invert" or "json"
-
-    result_dir.mkdir(parents=True, exist_ok=True)
     state, state_source = _load_state(cfg, state_choice)
+    # for ii in range(1,300000):
+    for ii in range(30):
+        save_name = f"rir_{ii:06d}.wav"
+        out = generate_rir_from_state(cfg, state=state, seed=ii)
+        rir = out["rir"]
+        save_wav(save_dir / save_name, rir, cfg.fs)
 
-    out = generate_rir_from_state(cfg, state=state)
-    rir = out["rir"]
-    ref1 = out["ref1"]
-    ref2 = out["ref2"]
-    dry = _load_dry_signal(cfg)
 
-    _write_outputs(result_dir, cfg.fs, dry, rir, ref1, ref2)
-    print("state_source:", state_source)
+
+    # result_dir = base_dir / "outputs"
+    # result_dir.mkdir(parents=True, exist_ok=True)
+    # ref1 = out["ref1"]
+    # ref2 = out["ref2"]
+    # dry = _load_dry_signal(cfg)
+    # _write_outputs(result_dir, cfg.fs, dry, rir, ref1, ref2)
+    # print("state_source:", state_source)
 
 
 if __name__ == "__main__":
