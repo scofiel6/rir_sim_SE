@@ -6,26 +6,25 @@ from engine.sound_field_sim.base_engine import BaseEngine, _room_range_from_hint
 
 def _build_mic_info(cfg: RIRSimSEConfig):
     arr = str(cfg.mic_array_type).lower().strip()
-    n = int(max(1, cfg.mic_num))
+    n = int(cfg.mic_num)
     if arr == "circular":
         return {
             "device_id": f"circular_{n}ch",
             "device_height": 1.2,
             "array_type": "circular",
             "mic_num": n,
-            "mic_radius": float(max(0.01, cfg.mic_radius)),
+            "mic_radius": float(cfg.mic_radius),
         }
 
     if cfg.mic_positions_m is not None and len(cfg.mic_positions_m) > 0:
         # Explicit linear geometry from cfg takes priority over uniform spacing.
         pos = np.asarray(cfg.mic_positions_m, dtype=np.float64).reshape(-1)
-        pos = pos - float(np.min(pos))
         n = int(pos.shape[0])
     else:
-        spacing = float(max(0.005, cfg.mic_spacing))
+        spacing = float(cfg.mic_spacing)
         pos = np.arange(n, dtype=np.float64) * spacing
         pos = pos - float(np.mean(pos))
-    jitter = float(max(0.0, cfg.mic_position_jitter_m))
+    jitter = float(cfg.mic_position_jitter_m)
     if jitter > 0.0:
         rng = np.random.default_rng(int(cfg.seed) + 11)
         pos = pos + rng.normal(0.0, jitter, size=pos.shape[0])
@@ -37,38 +36,19 @@ def _build_mic_info(cfg: RIRSimSEConfig):
     }
 
 
-def _clip_range(rng, lo, hi, min_width=0.05):
-    a, b = float(rng[0]), float(rng[1])
-    if b < a:
-        a, b = b, a
-    a = float(np.clip(a, lo, hi))
-    b = float(np.clip(b, lo, hi))
-    if b - a < float(min_width):
-        c = 0.5 * (a + b)
-        h = 0.5 * float(min_width)
-        a = max(float(lo), c - h)
-        b = min(float(hi), c + h)
-    return (float(a), float(b))
-
-
 def _merge_fit_dicts(stage1_fit, stage2_fit):
-    fit = dict(stage1_fit) if isinstance(stage1_fit, dict) else {}
-    if not isinstance(stage2_fit, dict):
-        return fit
-
-    warnings = []
-    if isinstance(fit.get("warnings"), list):
-        warnings.extend(fit["warnings"])
-    if isinstance(stage2_fit.get("warnings"), list):
-        warnings.extend(stage2_fit["warnings"])
-
+    fit = dict(stage1_fit)
     fit.update({k: v for k, v in stage2_fit.items() if k != "warnings"})
-    if len(warnings) > 0:
+    warnings = list(stage1_fit.get("warnings", [])) + list(stage2_fit.get("warnings", []))
+    if warnings:
         fit["warnings"] = list(dict.fromkeys(warnings))
     return fit
 
 
 def create_generator(cfg: RIRSimSEConfig):
+    # This is the one place where config priors become a concrete engine object.
+    # Everything below is still just engine state; the actual sample draw happens
+    # later inside BaseEngine.generate(...).
     custom_room_range = cfg.custom_room_range
     if custom_room_range is None:
         custom_room_range = _room_range_from_hint(cfg.room_size_hint, cfg.room_jitter_ratio)
@@ -79,7 +59,6 @@ def create_generator(cfg: RIRSimSEConfig):
         "lz": (2.4, 3.6),
     }
 
-    # Keep baseline conservative for small-room SE.
     gen = BaseEngine(
         fs=cfg.fs,
         mic_info=_build_mic_info(cfg),
@@ -137,13 +116,8 @@ def create_generator(cfg: RIRSimSEConfig):
 
 
 def apply_fit_to_generator(gen, fit):
-    if not isinstance(fit, dict):
-        return gen
-
-    # Room-size prior comes from cfg by default. Only override it when a
-    # future geometry inversion stage provides an actual estimate.
     room = fit.get("estimated_room_range")
-    if isinstance(room, dict):
+    if room is not None:
         gen.custom_room_range = room
 
     rt20 = fit.get("rt60_p20")
@@ -156,97 +130,61 @@ def apply_fit_to_generator(gen, fit):
         gen.custom_rt60_center = float(rt50)
 
     band = fit.get("rt60_band_median")
-    if isinstance(band, list) and len(band) > 0:
+    if band is not None:
         gen.custom_band_rt60_prior = np.asarray(band, dtype=np.float64)
 
     drr = fit.get("drr_db_p20_p80")
-    if isinstance(drr, list) and len(drr) == 2:
+    if drr is not None:
         gen.drr_range_db = (float(drr[0]), float(drr[1]))
 
     c50 = fit.get("c50_db_p20_p80")
-    if isinstance(c50, list) and len(c50) == 2:
+    if c50 is not None:
         gen.c50_range_db = (float(c50[0]), float(c50[1]))
 
     gen.fitted = fit
     return gen
 
 
-def _apply_conservative_postfit_clamp(gen, cfg: RIRSimSEConfig):
-    rt_lo = float(min(cfg.inversion_rt60_min, cfg.inversion_rt60_max))
-    rt_hi = float(max(cfg.inversion_rt60_min, cfg.inversion_rt60_max))
-    gen.custom_rt60_range = _clip_range(gen.custom_rt60_range, rt_lo, rt_hi, min_width=0.04)
-    gen.drr_range_db = _clip_range(gen.drr_range_db, 2.0, 12.0, min_width=1.0)
-    gen.c50_range_db = _clip_range(gen.c50_range_db, 4.0, 18.0, min_width=1.0)
-    gen.source_dist_range = (0.6, 1.8)
-    gen.band_rt60_jitter_oct = float(min(float(gen.band_rt60_jitter_oct), 1.0 / 10.0))
-    return gen
-
-
 def create_generator_from_fit(cfg: RIRSimSEConfig, fit):
-    gen = create_generator(cfg)
-    gen = apply_fit_to_generator(gen, fit)
-    return _apply_conservative_postfit_clamp(gen, cfg)
+    # Rebuild a fresh engine from config, then overwrite the fields that came from
+    # inversion. This keeps the saved state small and avoids storing a pickled engine.
+    return apply_fit_to_generator(create_generator(cfg), fit)
 
 
 def _run_stage1_statistical_inversion(gen, cfg: RIRSimSEConfig, pulse_recording):
     rt60_lo = float(min(cfg.inversion_rt60_min, cfg.inversion_rt60_max))
     rt60_hi = float(max(cfg.inversion_rt60_min, cfg.inversion_rt60_max))
     mode = str(cfg.inversion_drr_c50_mode).lower().strip()
-    if mode not in ("fixed", "auto", "from_recording"):
-        mode = "from_recording"
-
-    def _fit_with_mode(mode_use: str):
-        return gen.fit_from_recordings(
-            recordings=pulse_recording,
-            room_size_hint=cfg.room_size_hint,
-            room_jitter_ratio=cfg.room_jitter_ratio,
-            rt60_min_max=(rt60_lo, rt60_hi),
-            drr_prior_range_db=(2.0, 10.0),
-            c50_prior_range_db=(6.0, 16.0),
-            drr_c50_jitter_db=float(max(0.0, cfg.inversion_drr_c50_jitter_db)),
-            drr_c50_mode=str(mode_use),
-            drr_c50_from_recording_jitter_db=float(max(0.0, cfg.inversion_drr_c50_from_recording_jitter_db)),
-            fit_seed=cfg.seed,
-            update_generator=True,
-        )
-
-    try:
-        fit = _fit_with_mode(mode)
-        effective_mode = mode
-    except ValueError as e:
-        msg = str(e)
-        # Some measured IR files may fail strict impulse-like check.
-        # Fallback to auto mode so inversion continues instead of hard-failing.
-        if mode == "from_recording" and "requires impulse-like recordings" in msg:
-            fit = _fit_with_mode("auto")
-            effective_mode = "auto"
-            if isinstance(fit, dict):
-                warnings = fit.get("warnings")
-                if not isinstance(warnings, list):
-                    warnings = []
-                warnings.append(
-                    "Requested drr_c50_mode='from_recording' but at least one file "
-                    "failed impulse-like check; fallback to drr_c50_mode='auto'."
-                )
-                fit["warnings"] = warnings
-        else:
-            raise
-
-    if isinstance(fit, dict):
-        fit["drr_c50_mode_requested"] = str(mode)
-        fit["drr_c50_mode_effective"] = str(effective_mode)
-        fit["inversion_stage1"] = "statistical_priors"
+    # Stage-1 solves the coarse room statistics used later by the generator:
+    # RT60 range, band RT60 profile, DRR/C50 range, and noise summary.
+    fit = gen.fit_from_recordings(
+        recordings=pulse_recording,
+        room_size_hint=cfg.room_size_hint,
+        room_jitter_ratio=cfg.room_jitter_ratio,
+        rt60_min_max=(rt60_lo, rt60_hi),
+        drr_prior_range_db=(2.0, 10.0),
+        c50_prior_range_db=(6.0, 16.0),
+        drr_c50_jitter_db=float(cfg.inversion_drr_c50_jitter_db),
+        drr_c50_mode=mode,
+        drr_c50_from_recording_jitter_db=float(cfg.inversion_drr_c50_from_recording_jitter_db),
+        fit_seed=cfg.seed,
+        update_generator=True,
+    )
+    fit["drr_c50_mode_requested"] = mode
+    fit["drr_c50_mode_effective"] = mode
+    fit["inversion_stage1"] = "statistical_priors"
     return fit
 
 
 def _run_stage2_echo_structure_inversion(gen, pulse_recording):
+    # Stage-2 keeps the same recordings but extracts early-echo structure and EDT.
+    # These values are stored in the state for later analysis and future calibration.
     fit = gen.analyze_reflection_structure_from_recordings(
         recordings=pulse_recording,
         max_early_ms=80.0,
         n_echoes=6,
     )
-    if isinstance(fit, dict):
-        fit["inversion_stage2"] = "echo_structure"
+    fit["inversion_stage2"] = "echo_structure"
     return fit
 
 
@@ -255,7 +193,5 @@ def invert_acoustic_params(cfg: RIRSimSEConfig, pulse_recording):
     fit_stage1 = _run_stage1_statistical_inversion(gen, cfg, pulse_recording)
     fit_stage2 = _run_stage2_echo_structure_inversion(gen, pulse_recording)
     fit = _merge_fit_dicts(fit_stage1, fit_stage2)
-
-    gen = _apply_conservative_postfit_clamp(gen, cfg)
     gen.fitted = fit
     return gen, fit

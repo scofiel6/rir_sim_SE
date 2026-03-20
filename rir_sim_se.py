@@ -8,6 +8,8 @@ from config import RIRSimSEConfig
 
 
 def _as_2d_ch_first(x):
+    # The project keeps multi-channel audio in [ch, n] layout. Single-channel
+    # arrays are promoted once here so the rest of the pipeline can stay uniform.
     arr = np.asarray(x, dtype=np.float64)
     if arr.ndim == 1:
         return arr.reshape(1, -1)
@@ -16,10 +18,10 @@ def _as_2d_ch_first(x):
 
 def _build_ref1_from_full_rir(rir, fs, ref_early_ms=20.0, ref_late_tail_db=-26.0):
     r = np.asarray(rir, dtype=np.float64).reshape(-1)
-    if r.size == 0:
-        return r
 
-    # ref1 keeps direct + early energy and only a weak late tail.
+    # ref1 is not a strict early cut. It keeps the direct path and the chosen
+    # early window, then leaves a weak exponentially decaying late tail so the
+    # target still sounds like an acoustic response instead of a hard gate.
     early_n = max(1, int(round(float(ref_early_ms) * 1e-3 * fs)))
     direct_idx = _direct_index_from_rir(r, fs=fs)
     cut = min(r.size, direct_idx + early_n)
@@ -38,7 +40,9 @@ def _generate_full_and_ref1_rir(gen, seed, use_drr_c50, rir_seconds, ref_early_m
     dry_delta = np.zeros(rir_len, dtype=np.float64)
     dry_delta[0] = 1.0
 
-    # Delta excitation makes the generator output equal the sampled RIR itself.
+    # The engine normally convolves input speech with the sampled room response.
+    # Feeding a delta here makes the output waveform equal to the sampled RIR, so
+    # this helper becomes the single place that materializes one full response.
     y, _, meta = gen.generate(
         dry_delta,
         seed=int(seed),
@@ -94,6 +98,8 @@ def _select_sparse_peak_indices(x_abs, n_taps, min_gap):
 
 
 def _to_jsonable(x):
+    # Acoustic state is stored as plain JSON. This helper strips out numpy scalar
+    # types and arrays so every saved field is directly readable and editable.
     if isinstance(x, dict):
         return {str(k): _to_jsonable(v) for k, v in x.items()}
     if isinstance(x, (list, tuple)):
@@ -110,12 +116,8 @@ def _to_jsonable(x):
 
 
 def _compact_fit_for_state(fit):
-    """
-    Keep only parameters needed for downstream generation/repro and
-    drop verbose per-item diagnostics.
-    """
-    if not isinstance(fit, dict):
-        return {}
+    # The saved state is just a compact replay package for later generation.
+    # It keeps fitted priors and analysis summaries but drops per-recording traces.
     keep_keys = [
         "target_fs",
         "recording_fs_min_max",
@@ -156,6 +158,8 @@ def _compact_fit_for_state(fit):
 
 
 def _build_eq_magnitude_curve(fs, n_fft, centers_hz, gains_db):
+    # Device EQ is specified as sparse octave-band gains in the config. This
+    # helper turns that into one smooth magnitude curve over the RIR FFT bins.
     fs = int(fs)
     n_fft = int(n_fft)
     if fs <= 0 or n_fft <= 0:
@@ -192,6 +196,8 @@ def _build_eq_magnitude_curve(fs, n_fft, centers_hz, gains_db):
 
 
 def _apply_device_eq_multich(x, fs, centers_hz, gains_db):
+    # EQ is applied after RIR generation so the same coloration lands on `rir`,
+    # `ref1`, and `ref2` without changing the physical engine internals.
     r = _as_2d_ch_first(x)
     n = int(r.shape[1])
     g = np.asarray(list(gains_db), dtype=np.float64).reshape(-1)
@@ -215,12 +221,9 @@ def _build_ref2_from_rir(
     early_taps,
     min_tap_ms,
 ):
-    """
-    ref2:
-    - full-band (no air-tilt transfer),
-    - remove late reverb (direct + sparse early),
-    - attenuation strength matched to ref1 early energy per channel.
-    """
+    # ref2 is a sparse early-response target built from the full RIR.
+    # It keeps the direct path and a few early peaks, stays full-band, and then
+    # matches its early energy back to ref1 so the target level is still realistic.
     r = _as_2d_ch_first(rirs)
     ref1 = _as_2d_ch_first(ref1_rirs)
     n_ch, n = r.shape
@@ -271,9 +274,8 @@ def _build_ref2_from_rir(
 
 
 def invert_acoustic_state(cfg: RIRSimSEConfig, pulse_recording):
-    """
-    Step-1: invert acoustic state from impulse recordings.
-    """
+    # Inversion returns a fitted engine plus the compact fit dict that will be
+    # saved to json and reused later during generation-only runs.
     gen, fit = invert_acoustic_params(cfg, pulse_recording)
     return {
         "gen": gen,
@@ -283,14 +285,9 @@ def invert_acoustic_state(cfg: RIRSimSEConfig, pulse_recording):
 
 
 def save_acoustic_state_json(state, json_path):
-    """
-    Save only the compact fit needed for later synthesis.
-    """
-    if not isinstance(state, dict):
-        raise ValueError("state must be a dict")
-    fit = state.get("fit")
-    if not isinstance(fit, dict):
-        raise ValueError("state['fit'] must be a dict")
+    # The state file is intentionally small. It stores fitted priors, not a full
+    # serialized engine object, so it can be edited and moved like a plain config.
+    fit = state["fit"]
     fit_compact = _compact_fit_for_state(fit)
     payload = {
         "schema_version": 1,
@@ -304,18 +301,13 @@ def save_acoustic_state_json(state, json_path):
 
 
 def load_acoustic_state_json(cfg: RIRSimSEConfig, json_path):
-    """
-    Load inversion result from json and rebuild generator from fitted params.
-    Room-size prior is resolved from cfg unless an explicit estimated room
-    range is present in the saved fit.
-    """
     p = Path(json_path)
-    if not p.exists():
-        raise FileNotFoundError(f"State json not found: {json_path}")
     payload = json.loads(p.read_text(encoding="utf-8"))
-    fit = payload.get("fit")
-    if not isinstance(fit, dict):
-        raise ValueError(f"Invalid state json (missing fit dict): {json_path}")
+    fit = payload["fit"]
+
+    # Generation starts from a fresh engine built from config, then applies the
+    # fitted priors saved in the state file. Room-size prior still comes from the
+    # config unless a future geometry inversion writes `estimated_room_range`.
     gen = create_generator_from_fit(cfg, fit)
     return {
         "gen": gen,
@@ -326,15 +318,12 @@ def load_acoustic_state_json(cfg: RIRSimSEConfig, json_path):
 
 
 def generate_rir_from_state(cfg: RIRSimSEConfig, state, seed=None):
-    """
-    Step-2: generate one full RIR + two refs from inversion state.
-    No convolution here.
-    """
     if seed is None:
         seed = int(cfg.seed) + 1
 
     gen = state["gen"]
-    # Build full RIR first, then derive lightweight training targets from it.
+    # The generator always builds the full room response first. `ref1` and `ref2`
+    # are derived from that same response so all three stay aligned in time.
     rirs, ref1_rirs, meta = _generate_full_and_ref1_rir(
         gen=gen,
         seed=int(seed),

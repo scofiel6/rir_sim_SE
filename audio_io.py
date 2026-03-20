@@ -10,7 +10,6 @@ from engine.sound_field_sim.utils import mono_resample_to_fs, to_mono
 def read_audio_mono(path):
     x, fs = sf.read(str(path), dtype="float64")
     x = to_mono(x)
-    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     return x, int(round(float(fs)))
 
 
@@ -24,22 +23,26 @@ def convolve_dry_rir(dry, rir):
     if r.ndim == 1:
         wet = fftconvolve(dry, r)[: len(dry)]
         return wet.astype(np.float64)
-    if r.ndim == 2:
-        # Channel-first layout: convolve one RIR per output channel.
-        out = np.zeros((r.shape[0], len(dry)), dtype=np.float64)
-        for ch in range(r.shape[0]):
-            out[ch] = fftconvolve(dry, r[ch])[: len(dry)]
-        return out
-    raise ValueError(f"Unsupported RIR shape: {r.shape}")
+
+    # Multi-channel RIRs use internal layout [ch, n]. Each channel gets its own
+    # convolution against the same dry signal and the result keeps the same layout.
+    out = np.zeros((r.shape[0], len(dry)), dtype=np.float64)
+    for ch in range(r.shape[0]):
+        out[ch] = fftconvolve(dry, r[ch])[: len(dry)]
+    return out
 
 
 def save_wav(path, x, fs):
     p = Path(path)
     if p.suffix == "":
+        # Batch scripts often pass bare stem names like `rir_000123`.
+        # Adding `.wav` here keeps the call site short and always gives soundfile
+        # an explicit format.
         p = p.with_suffix(".wav")
     p.parent.mkdir(parents=True, exist_ok=True)
     arr = np.asarray(x, dtype=np.float32)
     if arr.ndim == 2:
-        # Internal layout is [ch, n], soundfile expects [n, ch].
+        # The generator keeps audio as [ch, n]. soundfile expects [n, ch], so
+        # file writing is the one place where the layout flips.
         arr = arr.T
     sf.write(str(p), arr, int(fs))
