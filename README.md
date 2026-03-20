@@ -10,7 +10,7 @@
 现在的主链路只有一条：
 
 1. 从 `configs/rir_sim_se_config.json` 读取房间先验、阵列配置、材料先验和一些生成参数。
-2. （2）读取 `acoustic_state.json`/（2）用实录脉冲响应做一次反演，再把结果存成 state。
+2. （1）读取 `acoustic_state.json`/（2）用实录脉冲响应做一次反演，再把结果存成 state。
 3. 用 `engine/sound_field_sim/base_engine.py` 生成一条完整 RIR。
 4. 在同一条 RIR 上再构造 `ref1` 和 `ref2`，方便后面 SE 任务直接使用。
 5. 后续可以再和干声卷积，得到 wet 样本。
